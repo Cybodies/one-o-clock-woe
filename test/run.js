@@ -1327,54 +1327,73 @@ console.log("\n[job breakdown — combined AI comment]");
 // 2026-07-21: Green merged INTO Red → 4 Thai-named groups ("ตี้แดง" owns
 // 1-4 + 9-12). Firebase marker stores now keyed by stable `mk` (the old
 // 5-group index) so pins/paths saved before the merge stay with their group.
+// 2026-08-01: collapsed 4 → 2 groups — "ตี้แดง" ตี้ 1-8, "ตี้เหลือง" ตี้ 9-16
+// (contiguous split; party ids/slots untouched). `mk` still frozen at the
+// original keys (1 = red, 2 = the former yellow group); keys 3, 4, 5 are
+// orphaned in Firebase on purpose — never read, never deleted.
 console.log("\n[overrun groups]");
 (() => {
   const appHtml = require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8");
 
-  t("overrun: OVERRUN_GROUPS partitions ตี้ 1-16 exactly once (แดง 1-4+9-12, สเก้าท์ 15,16)", () => {
+  t("overrun: OVERRUN_GROUPS partitions ตี้ 1-16 exactly once (แดง 1-8, เหลือง 9-16)", () => {
     const block = (appHtml.match(/const OVERRUN_GROUPS = \[([\s\S]*?)\];/) || [])[1];
     ok(block, "OVERRUN_GROUPS literal found");
     const groups = [...block.matchAll(/ids:\s*\[([0-9,\s]+)\]/g)].map(m => m[1].split(",").map(Number));
-    eq(groups.length, 4, "four groups");
-    eq(groups[0], [1, 2, 3, 4, 9, 10, 11, 12], "ตี้แดง owns 1-4 + 9-12 (Green merged in)");
-    eq(groups[1], [5, 6, 7, 8], "ตี้ตีบ้าน keeps 5-8");
-    eq(groups[2], [13, 14], "ตี้เสาเอา keeps 13,14");
-    eq(groups[3], [15, 16], "ตี้สเก้าท์ owns 15,16");
+    eq(groups.length, 2, "two groups");
+    eq(groups[0], [1, 2, 3, 4, 5, 6, 7, 8], "ตี้แดง owns 1-8");
+    eq(groups[1], [9, 10, 11, 12, 13, 14, 15, 16], "ตี้เหลือง owns 9-16");
     const all = groups.flat().sort((a, b) => a - b);
     eq(all, Array.from({ length: 16 }, (_, i) => i + 1), "ids 1-16 each exactly once");
-    ok(block.includes("#a855f7"), "purple color present");
-    ok(!block.includes("#22c55e"), "green color gone (merged into red)");
+    ok(block.includes("#ef4444") && block.includes("#eab308"), "red + yellow colors present");
+    ok(!block.includes("#22c55e") && !block.includes("#3b82f6") && !block.includes("#a855f7"),
+       "green/blue/purple colors gone (groups collapsed)");
     const mks = [...block.matchAll(/mk:\s*(\d+)/g)].map(m => Number(m[1]));
-    eq(mks, [1, 2, 4, 5], "marker keys frozen at pre-merge indices (saved pins survive)");
+    eq(mks, [1, 2], "marker keys frozen at the original indices (saved red/yellow pins survive)");
   });
 
-  t("overrun: page renders 4 group cards incl. ตี้สเก้าท์", () => {
+  t("overrun: page renders 2 group cards (ตี้แดง 1-8, ตี้เหลือง 9-16)", () => {
     reset(app, []);
     const html = app.call("buildOverrunHtml");
-    eq((html.match(/bg-card/g) || []).length, 4, "four group cards");
-    ok(html.includes("ตี้สเก้าท์ + ทำ Objective ตามสั่ง"), "scout card carries the full role title");
-    ok(html.includes("--gc:#a855f7"), "card carries the purple group color");
-    const redCard = (html.split("● ตี้แดง")[1] || "").split("● ตี้ตีบ้าน")[0];
-    for (const id of [1, 4, 9, 12])
+    eq((html.match(/bg-card/g) || []).length, 2, "two group cards");
+    for (const gone of ["ตี้สเก้าท์", "ตี้ตีบ้าน", "ตี้เสาเอา"])
+      ok(!html.includes(gone), `retired group "${gone}" no longer rendered`);
+    ok(html.includes("--gc:#ef4444") && html.includes("--gc:#eab308"), "cards carry red + yellow group colors");
+    const redCard    = (html.split("● ตี้แดง")[1] || "").split("● ตี้เหลือง")[0];
+    const yellowCard = (html.split("● ตี้เหลือง")[1] || "").split("● ตี้แดง")[0];
+    for (let id = 1; id <= 8; id++) {
       ok(redCard.includes(`data-tip-party="${id}"`), `ตี้แดง card holds party row ${id}`);
+      ok(!yellowCard.includes(`data-tip-party="${id}"`), `ตี้เหลือง card does NOT hold party row ${id}`);
+    }
+    for (let id = 9; id <= 16; id++) {
+      ok(yellowCard.includes(`data-tip-party="${id}"`), `ตี้เหลือง card holds party row ${id}`);
+      ok(!redCard.includes(`data-tip-party="${id}"`), `ตี้แดง card does NOT hold party row ${id}`);
+    }
   });
 
-  t("overrun: map gets 4 filter chips + dynamic group count title", () => {
+  t("overrun: map gets 2 filter chips + dynamic group count title", () => {
     reset(app, []);
     const html = app.call("buildOverrunHtml");
-    ok(html.includes("toggleMapFilterOverrun(4)"), "4th group filter chip wired");
-    ok(!html.includes("toggleMapFilterOverrun(5)"), "no 5th chip survives the merge");
-    ok(html.includes("● ตี้สเก้าท์<"), "scout chip uses the SHORT label");
-    ok(html.includes("Overrun Map · 4 กลุ่ม"), "map title reflects group count");
+    ok(html.includes("toggleMapFilterOverrun(2)"), "2nd group filter chip wired");
+    ok(!html.includes("toggleMapFilterOverrun(3)"), "no 3rd chip survives the collapse");
+    ok(html.includes('title="ตี้แดง">● ตี้แดง</button>'), "red chip rendered");
+    ok(html.includes('title="ตี้เหลือง">● ตี้เหลือง</button>'), "yellow chip rendered");
+    ok(html.includes("Overrun Map · 2 กลุ่ม"), "map title reflects group count");
   });
 
-  t("overrun: store access goes through STABLE mk keys (สเก้าท์ = key 5, not position 4)", () => {
-    // Position-keyed code (i = 1..4) would never touch key 5 — this catches a
-    // silent revert to store[i] that would misread pre-merge saved pins.
+  t("overrun: store access goes through STABLE mk keys (เหลือง = key 2; orphans 4,5 ignored)", () => {
+    // The clear/arrow paths must read store[g.mk], never store[i] — and the keys
+    // left behind by the retired groups must be skipped, not crashed on or wiped.
+    ok(appHtml.includes("store[OVERRUN_GROUPS[i - 1].mk]"), "store read goes through g.mk");
     app.setAdmin(true);
-    app.state.overrunMarkers = { 5: { x: 2, y: 2, path: [{ x: 0, y: 0 }] } };
+    app.state.overrunMarkers = {
+      2: { x: 2, y: 2, path: [{ x: 0, y: 0 }] },
+      4: { x: 9, y: 9, path: [{ x: 1, y: 1 }] },
+      5: { x: 8, y: 8, path: [{ x: 1, y: 1 }] }
+    };
     app.call("clearArrows", 3);
-    eq(app.state.overrunMarkers[5].path.length, 0, "ตี้สเก้าท์ path cleared via mk 5");
+    eq(app.state.overrunMarkers[2].path.length, 0, "ตี้เหลือง path cleared via mk 2");
+    eq(app.state.overrunMarkers[4].path.length, 1, "orphaned key 4 untouched (never read)");
+    eq(app.state.overrunMarkers[5].path.length, 1, "orphaned key 5 untouched (never read)");
     app.setAdmin(false);
   });
 
@@ -1382,7 +1401,7 @@ console.log("\n[overrun groups]");
     ok((appHtml.match(/i <= OVERRUN_GROUPS\.length/g) || []).length >= 4,
        "marker/arrow/clear loops iterate OVERRUN_GROUPS.length");
     eq((appHtml.match(/i <= 4\b/g) || []).length, 0, "no i <= 4 loop survives anywhere");
-    eq((appHtml.match(/marker:\s*\{/g) || []).length, 4,
+    eq((appHtml.match(/marker:\s*\{/g) || []).length, 2,
        "every group carries its own default marker spot (colocated, no parallel array)");
   });
 
@@ -1395,14 +1414,14 @@ console.log("\n[overrun groups]");
     ok(html.includes('id="mapWrap6"'),  "map 6 (Emperium) present");
     ok(html.includes('id="mapArrows6"'), "map 6 arrow svg present");
     ok(html.includes("Emperium"),        "Emperium map title rendered");
-    ok(html.includes("Overrun Map · 4 กลุ่ม"), "world map title intact");
+    ok(html.includes("Overrun Map · 2 กลุ่ม"), "world map title intact");
   });
 
   t("overrun: 2nd map uses its OWN independent filter (toggleMapFilterOverrunB)", () => {
     reset(app, []);
     const html = app.call("buildOverrunHtml");
-    ok(html.includes("toggleMapFilterOverrun(4)"),  "map 3 filter chip wired");
-    ok(html.includes("toggleMapFilterOverrunB(4)"), "map 6 filter chip wired to separate set");
+    ok(html.includes("toggleMapFilterOverrun(2)"),  "map 3 filter chip wired");
+    ok(html.includes("toggleMapFilterOverrunB(2)"), "map 6 filter chip wired to separate set");
     ok(html.includes("clearMapFilterOverrunB()"),   "map 6 has its own clear-filter");
   });
 

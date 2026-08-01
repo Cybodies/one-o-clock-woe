@@ -2845,20 +2845,20 @@ const TEAM_COLORS = [
   "#8b5cf6", "#a855f7", "#d946ef", "#ec4899"
 ];
 
-// 4 color groups partitioning the 16 shared overrun parties (2026-07-21:
-// Green merged INTO Red → "ตี้แดง" owns ตี้ 1-4 + 9-12, and the groups got
-// Thai role names — party ids/slots untouched, only the group mapping).
-// `mk` = STABLE Firebase marker key (overrun_markers[_b]/{mk}) — frozen at
-// each group's original 5-group index so pins/paths saved before the merge
-// stay with the right group (Green's old key 3 is orphaned; harmless).
-// `chip` = short label for map filter chips + toasts (falls back to name).
+// 2 color groups partitioning the 16 shared overrun parties (2026-08-01:
+// collapsed 4 → 2 — "ตี้แดง" owns ตี้ 1-8, "ตี้เหลือง" owns ตี้ 9-16, split
+// contiguously; party ids/slots untouched, only the group mapping changed).
+// `mk` = STABLE Firebase marker key (overrun_markers[_b]/{mk}) — frozen at each
+// group's ORIGINAL key (1 = red, 2 = the former yellow group) so pins/paths
+// saved before the collapse stay with the right color. Keys 3, 4 and 5 belong
+// to retired groups and are now orphaned in Firebase — never read, harmless,
+// and deliberately left in place (no migration/cleanup).
+// `chip` = optional short label for map filter chips + toasts (falls back to
+// name; neither current name needs one).
 // `marker` = the group's default map pin (used only until a position is saved).
 const OVERRUN_GROUPS = [
-  { name: "ตี้แดง",    color: "#ef4444", ids: [1,2,3,4,9,10,11,12], mk: 1, marker: { x: 25, y: 35 } },
-  { name: "ตี้ตีบ้าน", color: "#eab308", ids: [5,6,7,8],            mk: 2, marker: { x: 75, y: 35 } },
-  { name: "ตี้เสาเอา", color: "#3b82f6", ids: [13,14],              mk: 4, marker: { x: 75, y: 70 } },
-  { name: "ตี้สเก้าท์ + ทำ Objective ตามสั่ง", chip: "ตี้สเก้าท์",
-    color: "#a855f7", ids: [15,16],                                 mk: 5, marker: { x: 50, y: 52 } }
+  { name: "ตี้แดง",    color: "#ef4444", ids: [1,2,3,4,5,6,7,8],     mk: 1, marker: { x: 25, y: 35 } },
+  { name: "ตี้เหลือง", color: "#eab308", ids: [9,10,11,12,13,14,15,16], mk: 2, marker: { x: 75, y: 35 } }
 ];
 const TEAM_COLORS_OVERRUN = (() => {
   const out = new Array(16);
@@ -4204,7 +4204,7 @@ function renderOverrunMarkersFor(cfg) {
 
   for (let i = 1; i <= OVERRUN_GROUPS.length; i++) {
     const g = OVERRUN_GROUPS[i - 1];
-    const mk = g.mk;   // stable Firebase key (≠ i since the 2026-07-21 merge)
+    const mk = g.mk;   // stable Firebase key (frozen across group merges — never derive from i)
     if (!store[mk]) {
       const def = g.marker || { x: 50, y: 50 };
       store[mk] = { x: def.x, y: def.y, path: [] };
@@ -5465,7 +5465,7 @@ function buildSummaryHtml() {
  * guild bug report maps to a deployed version and stale caches are visible.
  * (No build step, so this is a manually-bumped constant — see RUNBOOK.md.)
  * ===================================================================== */
-const APP_VERSION = "2026.07.21.1";
+const APP_VERSION = "2026.08.01.1";
 function buildVersionStamp() { return "v" + APP_VERSION; }
 function renderVersionStamp() {
   if (typeof document === "undefined" || !document.body) return;
