@@ -1943,6 +1943,16 @@
   }
   .slot.filled { cursor: grab; }
   .slot.filled.dragging { opacity: 0.4; }
+  /* Seat is taken, but the member is missing a job/name (or was deleted). Amber
+     instead of hidden — the old behaviour rendered these as "Empty", which hid
+     the member and removed the × so the slot could never be cleared. Tint the
+     BACKGROUND: .slot only has a right-hand divider, so a border colour alone
+     would be invisible. */
+  .slot.filled.slot-incomplete { background: rgba(251,191,36,0.12); }
+  .slot.filled.slot-incomplete .slot-job { color: #fbbf24; opacity: 0.9; }
+  .slot.filled.slot-incomplete .slot-name { color: var(--muted); font-style: italic; }
+  /* Roster still loading — inert placeholder, deliberately not interactive. */
+  .slot.slot-loading { cursor: default; opacity: 0.55; }
   .slot .slot-del {
     position: absolute; top: 2px; right: 2px;
     color: var(--danger);
@@ -4908,20 +4918,10 @@ function isVisuallyBlank(s) {
     return !((s || "").replace(/[\s​‌‍﻿]/g, "").length);
   }
 }
-// "Ghost" for slot-display purposes: missing entirely, OR missing EITHER a
-// usable name OR a usable job. A slot member needs BOTH to be considered a
-// real party member — a row with just a name like "X" and no job renders as
-// a tiny lone character that visually looks like a stray delete icon.
-function isGhostMember(m) {
-  return !m || isVisuallyBlank(m.name) || isVisuallyBlank(m.job);
-}
-// Looser check, used only by the auto-sanitize that DELETES the slot reference.
-// We only auto-delete when BOTH are blank — incomplete-but-non-empty members
-// keep their slot assignment (rendered as Empty visually) so admin can fix the
-// roster without losing party assignments.
-function isFullyBlankMember(m) {
-  return !m || (isVisuallyBlank(m.name) && isVisuallyBlank(m.job));
-}
+// (isGhostMember / isFullyBlankMember were deleted 2026-08-02. Hiding a seat
+// because its member lacked a job is what made members invisible and their
+// slots unclearable; the renderer now flags them instead, and repairGhostSlots
+// keys off member existence alone.)
 function buildPartyRowHtml(p) {
   // ALWAYS render exactly PARTY_SLOTS cells regardless of what p.slots
   // holds. Firebase serializes trailing nulls out of an array (so a row
@@ -4937,26 +4937,48 @@ function buildPartyRowHtml(p) {
                    ondrop="dropSlot(event, ${p.id}, ${i})">Empty</div>`;
     }
     const m = findMember(memId);
-    // Member missing OR member has no name & no job → render as Empty so the
-    // user isn't stuck with a "ghost" slot. The Firebase listener / explicit
-    // sanitize pass cleans the underlying state.
-    if (isGhostMember(m)) {
-      return `<div class="slot empty" data-pid="${p.id}" data-sidx="${i}"
-                   ondragover="dragOverEl(event)" ondragleave="dragLeaveEl(event)"
-                   ondrop="dropSlot(event, ${p.id}, ${i})">Empty</div>`;
+    // The roster hasn't arrived yet (first paint): don't accuse a perfectly
+    // good seat of being broken, and don't offer a × that would drop a member
+    // we simply haven't loaded. Just show a placeholder until members hydrate.
+    if (!m && !(state.members && state.members.length)) {
+      // Deliberately inert: no `filled` class and no data-pid/data-sidx, so the
+      // touch drag matcher (".slot.filled[data-pid]") can't pick it up and drag
+      // an unloaded member out of their seat.
+      return `<div class="slot slot-loading" title="กำลังโหลดรายชื่อ…">
+          <span class="slot-job">…</span>
+          <div class="slot-info"><span class="slot-name">กำลังโหลด…</span></div>
+        </div>`;
     }
-    const cp = m.cp || 0;
+    // An OCCUPIED slot always renders as occupied. It used to render as "Empty"
+    // whenever the member had no job (isGhostMember) — the seat looked free but
+    // wasn't, the member was invisible, and with no × and no drag handle nobody
+    // could clear it (2026-08-01 bug report, hit on Overrun after job-less
+    // members were imported). Show what's wrong instead of hiding the person.
+    const jobText  = m ? jobForMode(m) : "";
+    const noName   = !m || isVisuallyBlank(m.name);
+    const noJob    = isVisuallyBlank(jobText);
+    const nameText = !m ? "ไม่พบสมาชิกคนนี้" : (noName ? "(ยังไม่มีชื่อ)" : m.name);
+    const cp = (m && m.cp) || 0;
     const cpHtml = cp > 0 ? `<span class="slot-cp">CP ${cp.toLocaleString()}</span>` : "";
-    const onLeave = isOnLeave(m);
-    return `<div class="slot filled ${onLeave ? "slot-onleave" : ""}" draggable="true" data-pid="${p.id}" data-sidx="${i}"
+    const onLeave = m ? isOnLeave(m) : false;
+    // Guests can see the amber seat but can't act on it (× is admin-only), so
+    // don't tell them to press a button they don't have.
+    const admin = typeof isAdmin === "function" && isAdmin();
+    const warn = !m ? (admin ? "สมาชิกคนนี้ถูกลบไปแล้ว — กด × เพื่อเอาออกจากตี้"
+                             : "สมาชิกคนนี้ถูกลบไปแล้ว — แจ้งแอดมินให้เอาออกจากตี้")
+               : noName ? "สมาชิกคนนี้ยังไม่มีชื่อ — แก้ที่หน้า Roster"
+               : noJob  ? "ยังไม่ได้ใส่อาชีพ — เลือกอาชีพที่หน้า Roster (ตี้ยังใช้งานได้ปกติ)"
+               : "";
+    return `<div class="slot filled ${warn ? "slot-incomplete" : ""} ${onLeave ? "slot-onleave" : ""}" draggable="true" data-pid="${p.id}" data-sidx="${i}"
+                 ${warn ? `title="${escapeHtml(warn)}"` : ""}
                  ondragstart="dragSlotStart(event, ${p.id}, ${i})"
                  ondragend="dragSlotEnd(event)"
                  ondragover="dragOverEl(event)" ondragleave="dragLeaveEl(event)"
                  ondrop="dropSlot(event, ${p.id}, ${i})">
-          ${leaveEnabled() ? `<button class="slot-leave-btn" onclick="event.stopPropagation(); toggleLeave('${m.id}')" title="${onLeave ? 'คนนี้ลาอยู่ — กดเพื่อให้กลับมาพร้อม' : 'มาร์คว่าคนนี้ลา (อยู่ในตี้เหมือนเดิม ไม่ย้าย)'}">${onLeave ? 'ลา ✓' : 'ลา'}</button>` : ''}
-          <span class="slot-job">${escapeHtml(jobForMode(m))}</span>
+          ${(m && leaveEnabled()) ? `<button class="slot-leave-btn" onclick="event.stopPropagation(); toggleLeave('${m.id}')" title="${onLeave ? 'คนนี้ลาอยู่ — กดเพื่อให้กลับมาพร้อม' : 'มาร์คว่าคนนี้ลา (อยู่ในตี้เหมือนเดิม ไม่ย้าย)'}">${onLeave ? 'ลา ✓' : 'ลา'}</button>` : ''}
+          <span class="slot-job">${!m ? "—" : noJob ? "ไม่มีอาชีพ" : escapeHtml(jobText)}</span>
           <div class="slot-info">
-            <span class="slot-name">${escapeHtml(m.name)}</span>
+            <span class="slot-name">${escapeHtml(nameText)}</span>
             ${cpHtml}
           </div>
           <span class="slot-del admin-only" onclick="event.stopPropagation(); removeFromSlot(${p.id}, ${i}); commitPartiesNow(); render();" title="ลบจากตี้">×</span>
@@ -5479,7 +5501,7 @@ function buildSummaryHtml() {
  * guild bug report maps to a deployed version and stale caches are visible.
  * (No build step, so this is a manually-bumped constant — see RUNBOOK.md.)
  * ===================================================================== */
-const APP_VERSION = "2026.08.01.3";
+const APP_VERSION = "2026.08.02.1";
 function buildVersionStamp() { return "v" + APP_VERSION; }
 function renderVersionStamp() {
   if (typeof document === "undefined" || !document.body) return;
@@ -6189,7 +6211,7 @@ function fbSubscribeAll() {
     _fbApplyingRemote = false;
     rebuildJobFilter();
     // Do NOT mutate party slots here. A slot whose member is missing/blank renders
-    // as Empty at display time (buildPartyRowHtml → isGhostMember) WITHOUT touching
+    // with an amber "needs attention" marker at display time WITHOUT touching
     // state, so a member that simply hasn't arrived from Firebase yet can't get its
     // slot nulled. The old sanitizeSlots() reassigned p.slots in place — an in-memory
     // mutation the next fbPushAll/commitPartiesNow would persist, silently wiping
@@ -6200,9 +6222,9 @@ function fbSubscribeAll() {
 
   // Diagnostic helpers — exposed on window so the user can call them from the
   // DevTools console when ghost-slot bug is suspected. Returns an array of
-  // {kind, party, slot, memId, member, severity}.
-  // severity = 'fully-blank' (auto-deleted by sanitize) or 'incomplete' (kept
-  // in slot, rendered as Empty visually).
+  // {kind, party, slot, memId, member, severity}. Since 2026-08-01 these slots
+  // all RENDER (amber, with a ×); this list is just "seats needing attention",
+  // and only the ones whose member is gone are touched by repairGhostSlots().
   window.diagGhostSlots = () => {
     const out = [];
     const scan = (kind, parties) => {
@@ -6212,8 +6234,10 @@ function fbSubscribeAll() {
         p.slots.forEach((id, si) => {
           if (!id) return;
           const m = findMember(id);
-          if (isGhostMember(m)) {
-            const severity = isFullyBlankMember(m) ? "fully-blank" : "incomplete";
+          // Match what the board actually draws: jobForMode (Overrun falls back
+          // to jobOverrun), not the raw m.job the old check used.
+          if (!m || isVisuallyBlank(m.name) || isVisuallyBlank(jobForMode(m))) {
+            const severity = !m ? "member-gone" : "incomplete";
             out.push({ kind, party: pi + 1, slot: si + 1, memId: id,
                        name: m && m.name, job: m && m.job, severity });
           }
@@ -6228,14 +6252,18 @@ function fbSubscribeAll() {
   };
 
   // Force-clean ghost slots and push to Firebase (admin only).
-  // STRICT mode here — clears any slot whose member is "ghost" (missing
-  // name OR job), not just fully-blank. That's the slot that renders as
-  // Empty visually but still has an orphan id underneath, leaking a
-  // stray × icon into the row. Auto-sanitize stays looser to avoid
-  // accidentally wiping rows mid-edit; the manual button is admin-
-  // initiated so it's safe to go aggressive.
+  // Clears ONLY slots whose member no longer exists in the roster — a real
+  // member who is merely missing a job/name is NOT a ghost: since 2026-08-01
+  // the slot renders them visibly (amber) with a working ×, so nuking them
+  // here would delete a seat the admin can see and manage. Bails out unless
+  // the roster is loaded, otherwise every id looks missing and this wipes the
+  // whole board.
   window.repairGhostSlots = () => {
     if (!isAdmin()) { toast && toast("ต้องเป็น admin", "error"); return false; }
+    if (!(state.members && state.members.length)) {
+      toast && toast("รายชื่อยังโหลดไม่เสร็จ — ลองใหม่อีกครั้ง", "error");
+      return false;
+    }
     let cleared = 0, trees = 0;
     const strictClean = (parties) => {
       if (!Array.isArray(parties)) return false;
@@ -6244,7 +6272,7 @@ function fbSubscribeAll() {
         if (!p || !Array.isArray(p.slots)) return;
         p.slots = p.slots.map(id => {
           if (!id) return null;
-          if (isGhostMember(findMember(id))) { cleared++; touched = true; return null; }
+          if (!findMember(id)) { cleared++; touched = true; return null; }
           return id;
         });
       });
@@ -6322,7 +6350,7 @@ function fbSubscribeAll() {
     });
     if (state.mode === "league") state.parties = state.partiesLeague;
     _fbApplyingRemote = false;
-    // No slot mutation on load — ghosts render as Empty at display time
+    // No slot mutation on load — incomplete members render visibly (amber)
     // (buildPartyRowHtml). Mutating here would let the next push persist a wipe.
     safeRender();
   });
@@ -6347,7 +6375,7 @@ function fbSubscribeAll() {
     });
     if (state.mode === "overrun") state.parties = state.partiesOverrun;
     _fbApplyingRemote = false;
-    // No slot mutation on load — ghosts render as Empty at display time.
+    // No slot mutation on load — incomplete members render visibly (amber).
     safeRender();
   });
 
@@ -7114,7 +7142,7 @@ function rosterUpdate(id, field, value) {
       return;
     }
     // Blank name/job orphans the row from the claim chooser AND makes every
-    // slot holding that member render "Empty" on every client (isGhostMember).
+    // slot holding that member unusable/unnamed on every client.
     // The rules reject both for guests now, so block them here too — with a
     // useful message instead of a raw permission error. (Admins are granted by
     // the /members rule, but a blank name is rejected for them as well.)
@@ -7169,7 +7197,7 @@ function rosterSaveMine(id) {
   if (!d) return;
   const name = String(d.name).trim();
   if (!name) { toast("ชื่อห้ามว่าง", "error"); return; }  // keep the draft so it can be fixed
-  // Blank job = the member's slot renders "Empty" for everyone (isGhostMember),
+  // Blank job = the member's slot is flagged incomplete for everyone,
   // so the rules reject it for non-admins — say why instead of failing the write.
   if (!String(d.job).trim() && !isAdmin()) { toast("Job (GL) ห้ามว่าง — เลือกอาชีพก่อนเซฟ", "error"); return; }
   for (const f of ["name", "job", "jobOverrun", "discord"]) {
@@ -7342,7 +7370,7 @@ async function rosterDedupe(silent) {
     });
     // A ghost bucket (blank name) still merges — but don't re-write the blank
     // name: the rules reject empty names now (a guest could blank someone's
-    // name to make their slot render "Empty" on every client). Omitting the
+    // name to break their slot on every client). Omitting the
     // key leaves the existing value untouched, so .validate never runs on it.
     if (!mergedPayload.name) delete mergedPayload.name;
     await _fbMembersRef.child(best.id).update(mergedPayload).catch(rosterWriteFailed);

@@ -1236,7 +1236,7 @@ console.log("\n[landing — front door wiring]");
   });
   // (Removed the old "Fix B: gate re-sanitize on loaded snapshot" test — the
   // listener sanitize was deleted entirely. Slots are never mutated on load now;
-  // ghosts render as Empty at display time. See the "[slot data-safety]" group.)
+  // incomplete members render visibly at display time. See "[slot data-safety]".)
 })();
 
 // --------------------------------------------------- summary exact targets
@@ -2025,13 +2025,69 @@ console.log("\n[slot data-safety — no silent wipe / leave persists]");
   const path = require("path");
   const appHtml = fs.readFileSync(path.join(__dirname, "..", "app.html"), "utf8");
 
-  t("rendering a slot whose member isn't loaded shows Empty but KEEPS the id (no wipe)", () => {
+  t("a slot whose member hasn't loaded yet shows a loading placeholder, KEEPS the id", () => {
     app.setRosterCache([]);            // member not in the roster yet (load race)
     const s = app.state; s.mode = "league"; s.members = [];
     const party = { id: 1, name: "ตี้ 1", slots: ["ghost-id", null, null, null, null] };
     const html = app.call("buildPartyRowHtml", party);
-    ok(/Empty/.test(html), "missing member renders as Empty");
+    ok(html.includes("กำลังโหลด…"), "shows loading, not a fake Empty");
+    eq((html.match(/class="slot empty"/g) || []).length, 4, "only the 4 genuinely-empty slots say Empty");
+    ok(!/slot-del/.test(html), "no × while the roster is still loading (can't drop what we can't see)");
+    // Inert for TOUCH too: the touch drag matcher is ".slot.filled[data-pid]",
+    // so the placeholder must carry neither, or a phone could drag out a member
+    // that simply hasn't downloaded yet — and commitPartiesNow would persist it.
+    const ph = (html.split('class="slot slot-loading"')[1] || "").split(">")[0];   // that tag's attrs only
+    ok(html.includes('class="slot slot-loading"'), "placeholder has its own class, not .filled");
+    ok(!/data-pid/.test(ph) && !/data-sidx/.test(ph), "no data-pid/data-sidx → touch drag can't grab it");
+    ok(!/draggable/.test(ph), "not draggable");
     eq(party.slots[0], "ghost-id", "slot id is preserved — NOT nulled (data survives the render)");
+  });
+
+  // 2026-08-01 bug report (Overrun): drop a member who has NO job into a slot and
+  // they vanished — the seat rendered "Empty", so there was no name, no ×, and no
+  // drag handle: invisible AND unclearable, while p.slots still held their id.
+  t("a job-less member stays VISIBLE and clearable in the slot (the reported bug)", () => {
+    const s = reset(app, [{ id: "n1", name: "นายเป็ด", job: "", jobOverrun: "", cp: 0 }]);
+    s.mode = "overrun";
+    const party = { id: 1, name: "ตี้ 1", slots: ["n1", null, null, null, null] };
+    const html = app.call("buildPartyRowHtml", party);
+    ok(html.includes("นายเป็ด"), "the member's name is rendered");
+    ok(html.includes("ไม่มีอาชีพ"), "the missing job is labelled, not hidden");
+    ok(html.includes("slot-del"), "the × is there — the slot can be cleared");
+    ok(html.includes("slot-incomplete"), "flagged amber so it's obvious what to fix");
+    eq((html.match(/class="slot empty"/g) || []).length, 4, "only the 4 free seats read Empty");
+  });
+
+  t("Overrun uses jobOverrun: set there but blank in job = a normal, unflagged slot", () => {
+    const s = reset(app, [{ id: "n2", name: "Grace", job: "", jobOverrun: "Sniper", cp: 0 }]);
+    s.mode = "overrun";
+    const html = app.call("buildPartyRowHtml", { id: 1, name: "ตี้ 1", slots: ["n2", null, null, null, null] });
+    ok(html.includes("Sniper"), "shows the Overrun job");
+    ok(!html.includes("slot-incomplete"), "not flagged — it HAS a job for this mode");
+  });
+
+  t("a slot pointing at a deleted member says so and can be cleared", () => {
+    const s = reset(app, mkMembers(["A"]));   // roster IS loaded, id resolves to nothing
+    s.mode = "league";
+    const party = { id: 1, name: "ตี้ 1", slots: ["gone-id", null, null, null, null] };
+    const html = app.call("buildPartyRowHtml", party);
+    ok(html.includes("ไม่พบสมาชิกคนนี้"), "says the member is gone");
+    ok(html.includes("slot-del"), "and offers the × to remove it");
+    ok(!html.includes("ไม่มีอาชีพ"), "doesn't also claim a deleted member 'has no job'");
+    eq(party.slots[0], "gone-id", "rendering never mutates the slot");
+  });
+
+  t("the amber flag is actually visible (background tint, not a phantom border)", () => {
+    ok(/\.slot\.filled\.slot-incomplete \{ background: rgba\(251,191,36/.test(appHtml),
+       ".slot only has a right divider, so the cue must be a background tint");
+  });
+
+  t("repairGhostSlots only clears MISSING members — never a real one lacking a job", () => {
+    ok(/if \(!findMember\(id\)\) \{ cleared\+\+;/.test(appHtml),
+       "strictClean keys off member existence, not isGhostMember");
+    const repair = (appHtml.split("window.repairGhostSlots = () => {")[1] || "").slice(0, 400);
+    ok(/state\.members && state\.members\.length/.test(repair),
+       "bails out until the roster is loaded (else every id looks missing → whole board wiped)");
   });
 
   t("the silent-wipe path is gone: no sanitizeSlots() mutating state in listeners", () => {

@@ -164,10 +164,16 @@ load() ──▶ initFirebase() ──▶ onAuthStateChanged
 
 - During drag, `setDragging(true)` blocks remote re-renders to avoid the
   "snap back" glitch when a snapshot lands mid-drag (commit `2949b58`).
-- Slots that exist in `state.parties` but no longer match a member are
-  rendered as **ghosts** (empty visual). Admin-side sanitize (`sanitizeSlots`)
-  clears them automatically on next push. Bug history: commits `b49cc74`,
-  `41728ac`, `de853be`, `7c24602`.
+- An **occupied slot always renders occupied** (since 2026-08-02). A member
+  who is missing a job/name — or an id whose member was deleted — is drawn in
+  amber (`.slot-incomplete`) with the name, a reason in `title=`, and a working
+  `×`. It used to render as "Empty", which hid the member and removed the `×`,
+  so the seat could never be cleared (the Overrun "มองไม่เห็น ล้างไม่ได้" bug).
+  Rendering NEVER mutates `state.parties`; permanent cleanup is admin-initiated
+  via `repairGhostSlots()`, which clears only slots whose member is genuinely
+  gone and refuses to run before the roster loads. While the roster is still
+  loading, slots show an inert "กำลังโหลด…" placeholder (no `×`, not draggable).
+  Bug history: commits `b49cc74`, `41728ac`, `de853be`, `7c24602`.
 - `dragMemberStart` / `dragSlotStart` / `dragPartyNumStart` all use the
   `dataTransfer` API. Don't mix `setData` formats across them.
 
