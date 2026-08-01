@@ -87,7 +87,7 @@ Use this lookup before grep:
   auctionGL: AuctionState,
   auctionOverrun: AuctionState,
   leaves: { [memberId]: { "YYYY-MM-DD": true, ... } },
-  system: { lastDailyReset: "YYYY-MM-DD", lastWeeklyReset: "YYYY-MM-DD" }
+  system: { lastDailyReset: "YYYY-MM-DD" }
 }
 ```
 
@@ -205,8 +205,11 @@ load() ──▶ initFirebase() ──▶ onAuthStateChanged
 - Toggling a cell writes `/leaves/{memberId}/{YYYY-MM-DD}: true`.
 - The League/Overrun party render shows the leave visual **only** on
   `todayBkkISO()` — past entries are inert.
-- Auto-clear (Mon 00:00 BKK): `lastWeeklyReset` checked on every render;
-  if stale, `/leaves` is removed.
+- Auto-clear is **per-date, after the fact**: `pastLeavePaths(leaves, today)`
+  returns only entries with `date < today`; the `/leaves` listener removes them
+  (admin clients only). An advance registration survives until its day is over.
+  (Before 2026-08-01 the whole tree was wiped every Monday, which deleted
+  future entries too.)
 
 ## Map images
 

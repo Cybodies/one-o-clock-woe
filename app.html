@@ -2911,12 +2911,13 @@ let state = {
     assignments: { main: { cards: [], illusion: [], white: [], black: [] }, sub: { cards: [], illusion: [], white: [], black: [] } } },
   // Scheduled leaves (advance leave registrations). Shape:
   //   leaves[memberId] = { "YYYY-MM-DD": true, ... }
-  // Cleared every Monday 00:00 BKK. Activates the leave visual on League/
-  // Overrun ONLY on the matching date (todayBkkISO()), then auto-deactivates.
+  // Pruned per-date once the date has PASSED (see pastLeavePaths) — an entry
+  // for an upcoming match survives until that day is over. Activates the leave
+  // visual on League/Overrun ONLY on the matching date (todayBkkISO()).
   leaves: {},
   // Bookkeeping for the auto-clear job. Strings are BKK dates so they're
   // stable across timezones / DST.
-  system: { lastDailyReset: "", lastWeeklyReset: "", auditLog: [] },
+  system: { lastDailyReset: "", auditLog: [] },
   auctionRequests: {},
   // Admin list mirrored from Firebase /admins/. Keyed by the email with
   // dots replaced by underscores (Firebase RTDB doesn't allow "." in keys).
@@ -2938,6 +2939,12 @@ function bkkNow() {
   const t = Date.now() + 7 * 60 * 60 * 1000;
   return new Date(t);
 }
+// Auction requests open at noon of the event day (guild rule, 2026-08-01 —
+// replaced an evening-hours label that nothing enforced — see CHANGELOG
+// 2026.08.01.3). Read the clock through bkkHour() so
+// the gate is a pure, testable check.
+const AUCTION_OPEN_HOUR = 12;
+function bkkHour() { return bkkNow().getUTCHours(); }   // UTC fields = BKK wall clock
 function todayBkkISO() {
   const d = bkkNow();
   const y = d.getUTCFullYear();
@@ -2980,17 +2987,18 @@ function fmtUpdatedAt(ms) {
   const mm = String(t.getUTCMinutes()).padStart(2, "0");
   return `${d}/${mo}, ${hh}:${mm}`;
 }
-function thisMondayISO() {
-  // Return the ISO date of the most recent Monday (or today if today is Mon).
-  // Used as the "weekly reset stamp" so we can detect when we've crossed
-  // Monday 00:00 BKK since last reset.
-  const today = todayBkkISO();
-  const d = bkkDow(today);
-  // Mon=1, so subtract (d===0 ? 6 : d-1) days
-  const back = d === 0 ? 6 : d - 1;
-  const [y, m, da] = today.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, da - back));
-  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,"0")}-${String(dt.getUTCDate()).padStart(2,"0")}`;
+/** /leaves paths whose date has already PASSED (date < today). A leave for an
+ *  upcoming match must survive until that day is over, so pruning is by date —
+ *  never "wipe everything on Monday", which used to delete future entries too. */
+function pastLeavePaths(leaves, today) {
+  const out = [];
+  for (const [mid, dates] of Object.entries(leaves || {})) {
+    if (!dates || typeof dates !== "object") continue;
+    for (const date of Object.keys(dates)) {
+      if (date < today) out.push(`leaves/${mid}/${date}`);
+    }
+  }
+  return out;
 }
 
 /* =====================================================================
@@ -5471,7 +5479,7 @@ function buildSummaryHtml() {
  * guild bug report maps to a deployed version and stale caches are visible.
  * (No build step, so this is a manually-bumped constant — see RUNBOOK.md.)
  * ===================================================================== */
-const APP_VERSION = "2026.08.01.2";
+const APP_VERSION = "2026.08.01.3";
 function buildVersionStamp() { return "v" + APP_VERSION; }
 function renderVersionStamp() {
   if (typeof document === "undefined" || !document.body) return;
@@ -6440,6 +6448,17 @@ function fbSubscribeAll() {
     _fbApplyingRemote = true;
     state.leaves = v;
     _fbApplyingRemote = false;
+    // Prune here — not in the daily reset — because this snapshot IS the
+    // hydration: the daily block stamps the day as done and would happily
+    // "prune" an empty, not-yet-loaded mirror. Removing only past dates is
+    // idempotent, so re-running it on every snapshot just converges.
+    if (isAdmin() && _fbDB) {
+      const stale = pastLeavePaths(state.leaves, todayBkkISO());
+      if (stale.length) {
+        console.log(`[leaves] pruning ${stale.length} past entr(ies)`);
+        stale.forEach(p => _fbDB.ref(p).remove().catch(e => console.warn("[leaves] prune failed", p, e)));
+      }
+    }
     // Re-render League/Overrun if today's scheduled-leave changed; safeRender
     // because the user might be dragging when a remote leave registers.
     safeRender();
@@ -6531,7 +6550,7 @@ function fbSubscribeAll() {
   _fbDB.ref("system").on("value", snap => {
     const v = snap.val() || {};
     _fbApplyingRemote = true;
-    state.system = { lastDailyReset: v.lastDailyReset || "", lastWeeklyReset: v.lastWeeklyReset || "", auditLog: Array.isArray(v.auditLog) ? v.auditLog.slice(-AUDIT_LOG_MAX) : [] };
+    state.system = { lastDailyReset: v.lastDailyReset || "", auditLog: Array.isArray(v.auditLog) ? v.auditLog.slice(-AUDIT_LOG_MAX) : [] };
     _fbApplyingRemote = false;
     // Whenever we hear about the system stamps, run a reset check — if our
     // local clock has crossed a boundary the remote stamp hasn't caught yet,
@@ -6545,12 +6564,11 @@ function fbSubscribeAll() {
 
 /* ---------- Auto-reset job (daily manual leave + weekly /leaves) ----- */
 // Idempotent: each client checks on load + every minute. First client past
-// the reset boundary wins (using state.system.lastDailyReset / lastWeeklyReset
+// the reset boundary wins (using state.system.lastDailyReset
 // as a "have we already reset for this period?" stamp).
 function autoCheckResets() {
   if (!_fbDB || !state.system) return;
   const today  = todayBkkISO();
-  const monday = thisMondayISO();
   // Daily reset: clear manual-leave flags on members. We do this on EVERY
   // calendar day in BKK that hasn't been stamped yet.
   if (state.system.lastDailyReset !== today) {
@@ -6584,6 +6602,9 @@ function autoCheckResets() {
       });
       if (cleared) console.log(`[reset] daily: cleared manual leave on ${cleared} members`);
     }
+    // (Leave registrations are pruned by date in the /leaves listener — see
+    // pastLeavePaths. Not here: this block stamps the day as done before the
+    // /leaves mirror is guaranteed to be hydrated.)
     // Auction-request: drop any past-date auction request branches so /auction_requests
     // never grows unbounded.
     if (typeof arAutoClearPast === "function") arAutoClearPast();
@@ -6591,21 +6612,26 @@ function autoCheckResets() {
     // — guild rules say the auction is a per-day activity.
     if (typeof arResetAuctionPages === "function") arResetAuctionPages();
   }
-  // Weekly reset: wipe /leaves/ every Monday 00:00 BKK. Stamp uses the
-  // Monday ISO so "lastWeeklyReset = <this Monday>" means we're up to date.
-  if (state.system.lastWeeklyReset !== monday) {
-    _fbDB.ref("system/lastWeeklyReset").set(monday).catch(()=>{});
-    state.system.lastWeeklyReset = monday;
-    // Any auth'd user can wipe /leaves (Rules allow auth != null write).
-    _fbDB.ref("leaves").remove()
-      .then(() => console.log("[reset] weekly: /leaves cleared on Monday"))
-      .catch(e => console.warn("[reset] weekly clear failed", e));
-  }
+  // (The Monday "wipe all of /leaves" reset was removed 2026-08-01 — leaves are
+  // pruned by date in the /leaves listener, so a future match's leave survives.)
+}
+
+// The noon auction gate is read at RENDER time, and crossing it writes nothing
+// to Firebase — so without this, a tab left open since the morning would still
+// show "ยังไม่ถึงเวลา" all afternoon. Re-render once, when the boundary flips.
+let _lastAuctionOpen = null;
+function checkAuctionOpenFlip() {
+  const open = bkkHour() >= AUCTION_OPEN_HOUR;
+  if (_lastAuctionOpen === null) { _lastAuctionOpen = open; return false; }
+  if (open === _lastAuctionOpen) return false;
+  _lastAuctionOpen = open;
+  return true;
 }
 // Re-check every minute so the moment the clock crosses 00:00 BKK we reset
-// without needing a page reload.
+// without needing a page reload — and so the noon unlock appears on its own.
 setInterval(() => {
   if (typeof autoCheckResets === "function") autoCheckResets();
+  if (checkAuctionOpenFlip() && typeof safeRender === "function") safeRender();
 }, 60 * 1000);
 
 /* ---------- Audit log: record WHO changed a team (system/auditLog) ----------
@@ -6653,7 +6679,7 @@ function auditBoardLabel(mode) {
 // /system node). Called from commitPartiesNow() on every admin team edit.
 function logAudit(what) {
   if (!_fbDB || !isAdmin()) return;
-  if (!state.system) state.system = { lastDailyReset: "", lastWeeklyReset: "", auditLog: [] };
+  if (!state.system) state.system = { lastDailyReset: "", auditLog: [] };
   const entry = { at: Date.now(), by: (_fbUser && _fbUser.email) || "admin", what: what };
   const next = coalesceAuditLog(state.system.auditLog, entry, AUDIT_LOG_MAX, AUDIT_COALESCE_MS);
   state.system.auditLog = next;
@@ -8185,9 +8211,12 @@ function buildAuctionView(kind) {
 
   // Day-status banner under the hero (schedule line lives here so guests still
   // see the auction hours that used to sit in the old tab's hero).
-  const hoursLine = `<span class="auction-daystatus-hours">ประมูล 21:00–22:00 ของวันกิจกรรม · เคลียร์ 00:00</span>`;
+  const hoursLine = `<span class="auction-daystatus-hours">ประมูล ${AUCTION_OPEN_HOUR}:00 เป็นต้นไป ของวันกิจกรรม · เคลียร์ 00:00</span>`;
+  const beforeOpen = bkkHour() < AUCTION_OPEN_HOUR;   // event day, but not noon yet
   let dayStatus;
-  if (isTodaysKind) {
+  if (isTodaysKind && beforeOpen) {
+    dayStatus = `<div class="auction-daystatus other">⏳ วันกิจ ${kindLabel} — ยังไม่ถึงเวลา เปิดขอตอน ${AUCTION_OPEN_HOUR}:00 ${hoursLine}</div>`;
+  } else if (isTodaysKind) {
     dayStatus = `<div class="auction-daystatus open">🟢 วันกิจ ${kindLabel} — เปิดรับคำขอประมูล ${hoursLine}</div>`;
   } else if (eventModeToday) {
     const otherLabel = eventModeToday === "gl" ? "GL" : "Overrun";
@@ -8225,14 +8254,19 @@ function buildAuctionView(kind) {
   // Request section — button (event-day + leave gated) + my requests (this mode)
   const myRequests = claimedId ? arGetMyRequests(claimedId).filter(r => r.date >= today && r.mode === kind) : [];
   const onLeave    = claimedId && arHasLeaveOnDate(claimedId, today);
-  const lockReason = !isTodaysKind ? "noevent" : onLeave ? "leave" : null;
+  const notYet     = isTodaysKind && bkkHour() < AUCTION_OPEN_HOUR;
+  const lockReason = !isTodaysKind ? "noevent" : onLeave ? "leave" : notYet ? "early" : null;
+  const btnOff     = onLeave || notYet;
   const requestBtnBar = claimedId ? `
     <div class="ar-bulk-bar">
-      ${isTodaysKind ? `<button class="ar-request-btn" ${onLeave ? "disabled" : ""}
-        title="${onLeave ? escapeHtml("คุณลงลาวันนี้ไว้ — ไม่มีสิทธิ์ขอประมูล") : ""}"
+      ${isTodaysKind ? `<button class="ar-request-btn" ${btnOff ? "disabled" : ""}
+        title="${onLeave ? escapeHtml("คุณลงลาวันนี้ไว้ — ไม่มีสิทธิ์ขอประมูล")
+                         : notYet ? escapeHtml(`เปิดขอตอน ${AUCTION_OPEN_HOUR}:00`) : ""}"
         onclick="arOpenRequestModal('${today}','${kind}')">🙋 ขอประมูล ${kindLabel} วันนี้ (${formatDayShortBkk(today)})</button>` : ""}
     </div>
-    ${lockReason === "noevent"
+    ${lockReason === "early"
+      ? `<div class="ar-lock-note noevent">⏳ ยังไม่ถึงเวลาประมูล — เปิดขอตอน ${AUCTION_OPEN_HOUR}:00 ของวันกิจ<br><span>กลับมาใหม่ตอนเที่ยงได้เลย</span></div>`
+      : lockReason === "noevent"
       ? `<div class="ar-lock-note noevent">🔒 หน้านี้ยังไม่เปิดรับคำขอวันนี้<br><span>ขอ ${kindLabel} ได้เฉพาะวันกิจ ${kindLabel} (${isGL ? "อังคาร/พฤหัส" : "อาทิตย์"}) · ขอล่วงหน้าไม่ได้</span></div>`
       : lockReason === "leave"
         ? `<div class="ar-lock-note leave">🌴 คุณลงลาวันที่ ${today} ไว้แล้ว — ไม่มีสิทธิ์ขอประมูลวันนี้<br><span>ถ้าเข้าได้ ให้ยกเลิกลาก่อนในแท็บ "🌴 ลา"</span></div>`
@@ -8833,6 +8867,7 @@ function arRequestBlockReason(memberId, date, mode) {
   if (!ev) return "วันนี้ไม่ใช่วันกิจกรรม — ขอประมูลได้เฉพาะวันกิจ (อังคาร/พฤหัส = GL, อาทิตย์ = Overrun)";
   const allowedMode = ev === "GL" ? "gl" : "overrun";
   if (mode !== allowedMode) return `วันนี้เป็นกิจ ${ev} — ขอได้เฉพาะของกิจ ${ev} เท่านั้น`;
+  if (bkkHour() < AUCTION_OPEN_HOUR) return `ยังไม่ถึงเวลาประมูล — เปิดขอ ${AUCTION_OPEN_HOUR}:00 เป็นต้นไป`;
   if (arHasLeaveOnDate(memberId, date)) return `คุณลงลาวันที่ ${date} ไว้ — ไม่มีสิทธิ์ขอประมูล`;
   return null;
 }
@@ -9244,8 +9279,9 @@ function buildUsersHtml() {
  * =====================================================================
  * Anyone (guest + admin) can register leave for any roster member on any
  * future or current date. The leave activates on that date (mark visible
- * on League/Overrun), then auto-deactivates when the date passes. Whole
- * /leaves/ tree resets every Monday 00:00 BKK (autoCheckResets()).
+ * on League/Overrun), then auto-deactivates when the date passes. Entries are
+ * pruned per-date AFTER their day has passed (pastLeavePaths, run from the
+ * /leaves listener) — advance registrations are never cleared early.
  */
 
 // Form state — only kept on the local client during interaction. Submitted
@@ -9350,7 +9386,7 @@ function buildLeaveHtml() {
           วันนี้ ${todayDow} · ${todayEv ? `มีกิจ ${todayEv}` : "ไม่มีกิจ"}
         </span>
         <div style="flex:1"></div>
-        <span style="font-size:11px;color:var(--muted)">รายการลาจะถูกล้างทุกวันจันทร์ 00:00</span>
+        <span style="font-size:11px;color:var(--muted)">ลาล่วงหน้าได้ — รายการจะถูกล้างหลังผ่านวันนั้นไปแล้วเท่านั้น</span>
       </div>
       <div class="leave-form">
         <div class="leave-form-field">

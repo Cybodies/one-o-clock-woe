@@ -49,6 +49,7 @@ function reset(app, members) {
   s.auctionOverrun = app.call("normalizeAuctionState", {}, "overrun");
   app.setSearch("");
   app.setAdmin(true);
+  app.setHour(20);   // past AUCTION_OPEN_HOUR — the time gate is tested explicitly below
   return s;
 }
 function mkMembers(names) { return names.map(n => ({ id: n, name: n, job: "Knight", cp: 1000 })); }
@@ -59,6 +60,7 @@ console.log("[parse]");
 t("inline <script> parses cleanly (QA gate)", () => { ok(parseCheck() > 1000, "expected sizable inline JS"); });
 
 const app = loadApp();
+app.setHour(20);   // default clock for every test: after the noon auction gate
 t("app boots in harness (functions + state available)", () => {
   ok(app.state && typeof app.state === "object", "no state");
   ok(typeof app.fn("computeAuction") === "function");
@@ -101,6 +103,36 @@ t("gate BLOCKS a member on leave for the event day", () => {
   app.setToday("2026-06-02");
   app.state.leaves = { A: { "2026-06-02": true } };
   isErr(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), "on leave");
+});
+
+// 2026-08-01: the auction opens at NOON of the event day. Before this, the
+// "21:00–22:00" line was decoration — any hour of the event day was open.
+console.log("\n[auction opens at noon]");
+t("gate BLOCKS a request before 12:00 on the right event day", () => {
+  reset(app, mkMembers(["A"]));
+  app.setToday("2026-06-02");   // Tue = GL
+  for (const h of [0, 8, 11]) {
+    app.setHour(h);
+    isErr(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `blocked at ${h}:00`);
+  }
+  app.setHour(20);
+});
+t("gate ALLOWS from 12:00 onward", () => {
+  reset(app, mkMembers(["A"]));
+  app.setToday("2026-06-02");
+  for (const h of [12, 13, 23]) {
+    app.setHour(h);
+    isNull(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `open at ${h}:00`);
+  }
+  app.setHour(20);
+});
+t("noon is one constant — gate, schedule line and button all use it", () => {
+  const appHtml = require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8");
+  ok(/const AUCTION_OPEN_HOUR = 12;/.test(appHtml), "AUCTION_OPEN_HOUR = 12");
+  ok(!appHtml.includes("21:00–22:00"), "the old unenforced 21:00–22:00 label is gone");
+  ok(/ประมูล \$\{AUCTION_OPEN_HOUR\}:00 เป็นต้นไป/.test(appHtml), "schedule line derives from the constant");
+  ok(/bkkHour\(\) < AUCTION_OPEN_HOUR/.test(appHtml), "gate compares the BKK hour to the constant");
+  ok(/const btnOff\s+= onLeave \|\| notYet;/.test(appHtml), "request button is disabled before noon too");
 });
 
 console.log("\n[editable per-person rates — Feature 2]");
@@ -2061,6 +2093,83 @@ console.log("\n[slot data-safety — no silent wipe / leave persists]");
 // guest wiped all 5 slots locally (localStorage kept it; an admin later signing in
 // on that same tab would have pushed the wiped board to everyone). These tests pin
 // the gate on EVERY destructive party handler — a lost guard is the regression.
+// 2026-08-01: leave registrations used to be wiped WHOLESALE every Monday, which
+// deleted entries for matches that hadn't happened yet — register leave for
+// Thursday on Sunday and it silently vanished on Monday. Now they're pruned by
+// date: only days that have already passed are removed.
+console.log("\n[leave pruning — only after the day has passed]");
+(() => {
+  const appHtml = require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8");
+  const leaves = {
+    m1: { "2026-06-01": true, "2026-06-04": true },   // past, future
+    m2: { "2026-06-02": true },                        // today
+    m3: { "2026-05-28": true },                        // past
+    m4: null                                           // junk bucket
+  };
+
+  t("pastLeavePaths returns ONLY dates before today", () => {
+    const paths = app.call("pastLeavePaths", leaves, "2026-06-02");
+    eq(paths.sort(), ["leaves/m1/2026-06-01", "leaves/m3/2026-05-28"].sort(), "past only");
+  });
+  t("today's leave is KEPT (the day isn't over yet)", () => {
+    const paths = app.call("pastLeavePaths", leaves, "2026-06-02");
+    ok(!paths.some(p => p.includes("m2")), "m2's leave for today survives");
+  });
+  t("a future match's leave is KEPT (the old Monday wipe killed these)", () => {
+    const paths = app.call("pastLeavePaths", leaves, "2026-06-02");
+    ok(!paths.includes("leaves/m1/2026-06-04"), "Thu leave registered early survives");
+    // …and it stays kept every day until the date actually passes.
+    ok(!app.call("pastLeavePaths", leaves, "2026-06-04").includes("leaves/m1/2026-06-04"),
+       "still kept ON the day itself");
+    ok(app.call("pastLeavePaths", leaves, "2026-06-05").includes("leaves/m1/2026-06-04"),
+       "pruned the day AFTER");
+  });
+  t("handles an empty/garbage /leaves tree without throwing", () => {
+    eq(app.call("pastLeavePaths", null, "2026-06-02"), [], "null tree");
+    eq(app.call("pastLeavePaths", {}, "2026-06-02"), [], "empty tree");
+    eq(app.call("pastLeavePaths", { x: "nope" }, "2026-06-02"), [], "non-object bucket skipped");
+  });
+  t("the blanket Monday wipe of /leaves is gone", () => {
+    ok(!/ref\("leaves"\)\.remove\(\)/.test(appHtml), 'no ref("leaves").remove() anywhere');
+    ok(!appHtml.includes("lastWeeklyReset"), "weekly reset stamp retired with it");
+    ok(!appHtml.includes("thisMondayISO"), "Monday helper deleted");
+  });
+
+  // The prune runs from the /leaves LISTENER, not the daily-reset block: that
+  // block stamps the day as done before the local /leaves mirror is guaranteed
+  // to be hydrated, so pruning there could silently skip a whole day.
+  t("prune runs off the /leaves snapshot (hydration-safe), admin-only", () => {
+    const listener = (appHtml.split('_fbDB.ref("leaves").on("value"')[1] || "").slice(0, 900);
+    ok(/pastLeavePaths\(state\.leaves, todayBkkISO\(\)\)/.test(listener), "prunes inside the listener");
+    ok(/if \(isAdmin\(\) && _fbDB\)/.test(listener), "guests never write");
+    const daily = (appHtml.split("function autoCheckResets()")[1] || "").slice(0, 2000);
+    ok(!/pastLeavePaths\(/.test(daily), "daily reset no longer CALLS it (it can run pre-hydration)");
+  });
+
+  // A tab left open since the morning must unlock itself at 12:00 — crossing
+  // the gate writes nothing to Firebase, so no listener would wake the page.
+  t("the noon unlock re-renders an already-open page", () => {
+    ok(/function checkAuctionOpenFlip\(\)/.test(appHtml), "flip detector exists");
+    ok(/checkAuctionOpenFlip\(\) && typeof safeRender === "function"\) safeRender\(\)/.test(appHtml),
+       "the 60s interval re-renders on the flip");
+    app.setHour(9);  app.call("checkAuctionOpenFlip");          // prime
+    eq(app.call("checkAuctionOpenFlip"), false, "no flip while it stays morning");
+    app.setHour(12);
+    eq(app.call("checkAuctionOpenFlip"), true,  "flips exactly once at noon");
+    eq(app.call("checkAuctionOpenFlip"), false, "…and not again afterwards");
+    app.setHour(20);
+  });
+
+  t("no page still claims leave is wiped every Monday", () => {
+    const idx = require("fs").readFileSync(require("path").join(__dirname, "..", "index.html"), "utf8");
+    for (const [name, src] of [["app.html", appHtml], ["index.html", idx]]) {
+      ok(!src.includes("ทุกวันจันทร์"), `${name}: no "every Monday" copy`);
+      ok(!src.includes("รีเซ็ตอัตโนมัติทุกสัปดาห์"), `${name}: no "weekly auto-reset" copy`);
+    }
+    ok(appHtml.includes("ล้างหลังผ่านวันนั้นไปแล้วเท่านั้น"), "leave hero states the real rule");
+  });
+})();
+
 console.log("\n[admin gate — destructive party ops]");
 (() => {
   const appHtml = require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8");

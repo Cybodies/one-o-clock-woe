@@ -13,7 +13,7 @@ post-WoE auctions. Used by a single Ragnarok Online guild.
 - **Auction GL** — post-WoE loot split 70/30 (main/sub field); item counts
   are entered as final totals
 - **Auction Overrun** — per-column drag-drop with auction page numbering
-- **Leave** — scheduled-leave registration, auto-resets every Monday
+- **Leave** — scheduled-leave registration; entries clear only after their date has passed
   00:00 Asia/Bangkok
 
 ## Data source

@@ -6,7 +6,7 @@ Keep fixes minimal during an event; do the full QA pass after.
 
 ## Before any destructive action (do this first)
 
-Destructive = "🧹 ล้างหน้า Auction", weekly leave reset, deploying new Firebase rules,
+Destructive = "🧹 ล้างหน้า Auction", deploying new Firebase rules,
 or any bulk `/members` rewrite. **Back up the affected data first** — restore is impossible
 without it:
 
@@ -56,7 +56,7 @@ backup you exported above. Imports overwrite the selected node.
 | Writes silently fail (toast "ตรวจ Firebase Rules…") | rules block a path | check `docs/firebase-rules-audit.md`; verify in Rules Playground; fix `database.rules.json` + redeploy |
 | Auction rate edit doesn't save | `rates` blocked by old/strict rules | deploy the current `database.rules.json` (it validates + allows `rates`) |
 | Members see old behavior after deploy | stale GH Pages cache | confirm via footer version; tell them hard-refresh |
-| Auction page wiped unexpectedly | daily/weekly reset or manual clear | restore from the pre-action backup |
+| Auction page wiped unexpectedly | daily reset (00:00 BKK) or manual clear | restore from the pre-action backup |
 
 ## Emergency hotfix (production down mid-WoE)
 

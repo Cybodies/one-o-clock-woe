@@ -94,6 +94,7 @@ function loadApp() {
   globalThis.__T_setSearch = function(v){ _auctionSearch = v; };
   globalThis.__T_setAdmin  = function(v){ isAdmin = function(){ return !!v; }; };
   globalThis.__T_setToday  = function(v){ todayBkkISO = function(){ return v; }; };
+  globalThis.__T_setHour   = function(v){ bkkHour = function(){ return v; }; };
   globalThis.__T_save = function(){ try { save(); } catch(e){} };
   globalThis.__T_setRosterCache = function(v){ rosterCache = v; };
   globalThis.__T_setMembersRef  = function(r){ _fbMembersRef = r; };
@@ -183,6 +184,7 @@ function loadApp() {
     appVersion: context.__T_APP_VERSION,
     setAdmin: context.__T_setAdmin,
     setToday: context.__T_setToday,
+    setHour: context.__T_setHour,
     setSearch: context.__T_setSearch,
     setRosterCache: context.__T_setRosterCache,
     setMembersRef: context.__T_setMembersRef,

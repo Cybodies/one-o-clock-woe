@@ -39,11 +39,11 @@ auth != null && auth.token.email != null && (
 | ⮑ `…/rates/{card,illusion,white,black}` | — | `.validate`: number ≥ 1 | editable per-person rates (Feature 2) |
 | `/auction_requests` (node) | authed | **admin** | admin clear-day / auto-clear `.remove()` |
 | ⮑ `…/{date}/{mode}/{reqId}` | authed | **authed CREATE or DELETE**; update = admin | guest create pending (index.html:6981) + withdraw `.remove()`; admin approve/reject `.update()` |
-| `/leaves` (node) | authed | **admin** | weekly reset `.remove()` (index.html:5518) |
+| `/leaves` (node) | authed | **admin** | per-date prune of PAST entries only (`pastLeavePaths`, /leaves listener) |
 | ⮑ `/leaves/{memberId}/{date}` | authed | **authed** (bool) | guest leave toggle (index.html:7779) — no admin gate by design |
 | `/job_targets` | authed | **admin** | summary targets |
 | `/markers`, `/overrun_markers` | authed | **admin** | map markers |
-| `/system` | authed | **admin** | daily/weekly reset stamps |
+| `/system` | authed | **admin** | daily reset stamp (`lastDailyReset`) |
 | `/admins` | authed | **admin** | privilege escalation surface — locked hard |
 | `/users` | authed | **admin** | app login accounts (no secrets stored) |
 | `/wheel_history` | authed | **admin** | 🎡 prize-wheel winner log; `$wid` shape-locked ({at,by,winnerId,winnerName,prize} + `$other:false`), client-trimmed to 200 |
