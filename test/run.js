@@ -857,13 +857,17 @@ console.log("\n[roster self-edit — guest claims own row]");
     eq(writes[0].payload.name, "Bobby");
     eq(writes[0].payload.updatedBy, "admin");
   });
-  t("blank name: guest rejected, admin allowed (ghost-row machinery handles)", () => {
+  // 2026-08-01: blank names are now rejected for EVERYONE (client + rules).
+  // A blank name makes every slot holding that member render "Empty" on every
+  // client, and /members/$mid is writable by any signed-in user — so an empty
+  // name was a cross-client way to make a ตี้ look wiped. Delete the row instead.
+  t("blank name rejected for guest AND admin (matches the rules validator)", () => {
     setup(false, "m1");
     app.call("rosterUpdate", "m1", "name", "   ");
     eq(writes.length, 0, "guest blank name rejected");
     setup(true, "");
     app.call("rosterUpdate", "m1", "name", "");
-    eq(writes.length, 1, "admin may clear name");
+    eq(writes.length, 0, "admin blank name rejected too");
   });
   t("cp: strips non-digits, clamps to 100,000,000", () => {
     setup(false, "m1");
@@ -963,8 +967,11 @@ console.log("\n[roster self-edit — guest claims own row]");
       eq(mid[k]["$x"][".validate"], false, k + " has a child-write lock");
     }
     eq(mid["$other"][".validate"], false, "$other:false — unknown keys rejected (all 10 writer keys are whitelisted)");
-    ok(mid.name[".validate"].indexOf("length >= 1") === -1 && mid.name[".validate"].indexOf("length > 0") === -1,
-       "name validator must allow '' (dedupe ghost rows)");
+    ok(mid.name[".validate"].indexOf("length > 0") !== -1,
+       "name validator must REJECT '' (an empty name ghosts the member's slot on every client)");
+    ok(/if \(!mergedPayload\.name\) delete mergedPayload\.name;/.test(
+         require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8")),
+       "dedupe omits a blank name instead of re-writing it (ghost buckets still merge)");
   });
   t("rules limits === client constants (drift tripwire)", () => {
     const rules = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "..", "database.rules.json"), "utf8"));
@@ -2046,6 +2053,121 @@ console.log("\n[slot data-safety — no silent wipe / leave persists]");
     ok(/removeFromSlot\(cur\.pid, cur\.sidx\);[\s\S]{0,120}commitPartiesNow/.test(appHtml),
        "drop on the pool → removeFromSlot + commitPartiesNow");
     ok(/if \(!isAdmin\(\) \|\| e\.touches\.length !== 1\) return;/.test(appHtml), "touch drag is admin-gated");
+  });
+})();
+
+// 2026-08-01 bug report: "กดที่ไม่ใช่แอดมินสามารถลบตี้ออกได้" — the per-party ✕
+// (clearParty) was rendered to guests AND its handler had no isAdmin() gate, so a
+// guest wiped all 5 slots locally (localStorage kept it; an admin later signing in
+// on that same tab would have pushed the wiped board to everyone). These tests pin
+// the gate on EVERY destructive party handler — a lost guard is the regression.
+console.log("\n[admin gate — destructive party ops]");
+(() => {
+  const appHtml = require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8");
+  const rules   = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "..", "database.rules.json"), "utf8"));
+  // Full 16-party board — clearParty()/dropSlot() end in render(), which walks
+  // every party of the active mode and would trip over a short array.
+  const board = () => {
+    const ps = app.call("makeEmptyParties");
+    ps[0].slots = ["m1", "m2", null, null, null];
+    ps[1].slots = ["m3", null, null, null, null];
+    return ps;
+  };
+  const fakeEvt = () => ({ preventDefault() {}, currentTarget: { classList: { add() {}, remove() {} } } });
+  const dragEvt = () => ({ ...fakeEvt(), dataTransfer: {}, stopPropagation() {} });
+
+  t("guest cannot clearParty (confirm() would say yes — the gate must fire first)", () => {
+    const s = reset(app, mkMembers(["m1", "m2", "m3"]));
+    s.mode = "league"; s.parties = s.partiesLeague = board();
+    app.setAdmin(false);
+    app.call("clearParty", 1);
+    eq(s.parties[0].slots.filter(Boolean).length, 2, "guest click leaves ตี้ 1 untouched");
+    app.setAdmin(true);
+    app.call("clearParty", 1);
+    eq(s.parties[0].slots.filter(Boolean).length, 0, "admin can still clear");
+  });
+
+  t("guest cannot removeFromSlot (the per-slot × path)", () => {
+    const s = reset(app, mkMembers(["m1", "m2", "m3"]));
+    s.mode = "league"; s.parties = s.partiesLeague = board();
+    app.setAdmin(false);
+    app.call("removeFromSlot", 1, 0);
+    eq(s.parties[0].slots[0], "m1", "guest × does nothing");
+    app.setAdmin(true);
+    app.call("removeFromSlot", 1, 0);
+    eq(s.parties[0].slots[0], null, "admin × still removes");
+  });
+
+  t("guest cannot drop into a slot or onto a party number (with a REAL drag armed)", () => {
+    const s = reset(app, mkMembers(["m1", "m2", "m3", "m4"]));
+    s.mode = "league"; s.parties = s.partiesLeague = board();
+    const arm = () => app.call("dragMemberStart", dragEvt(), "m4");   // sets the module-level `drag`
+    app.setAdmin(false);
+    arm(); app.call("dropSlot", fakeEvt(), 2, 1);
+    eq(s.parties[1].slots[1], null, "guest drop into a slot does nothing");
+    arm(); app.call("dropPartyNum", fakeEvt(), 2);
+    eq(s.parties[1].slots.filter(Boolean).length, 1, "guest drop on the party number does nothing");
+    // Positive control: the SAME armed drag lands once admin — proves the test
+    // isn't passing just because `drag` was empty.
+    app.setAdmin(true);
+    arm(); app.call("dropSlot", fakeEvt(), 2, 1);
+    eq(s.parties[1].slots[1], "m4", "admin drop lands");
+  });
+
+  t("guest cannot deleteMember (confirm() says yes in the harness)", () => {
+    const s = reset(app, mkMembers(["m1", "m2", "m3"]));
+    s.mode = "league"; s.parties = s.partiesLeague = board();
+    app.setAdmin(false);
+    app.call("deleteMember", "m1");
+    eq(s.members.length, 3, "guest delete does nothing");
+    eq(s.parties[0].slots[0], "m1", "and the slot keeps its member");
+    app.setAdmin(true);
+    app.call("deleteMember", "m1");
+    eq(s.members.length, 2, "admin can still delete");
+    eq(s.parties[0].slots[0], null, "slot released");
+  });
+
+  t("every destructive party handler gates on isAdmin() before touching data", () => {
+    for (const fn of ["clearParty", "renameParty", "deleteMember", "removeFromSlot", "dropSlot", "dropPartyNum"]) {
+      const body = (appHtml.match(new RegExp("function " + fn + "\\([^)]*\\) \\{([\\s\\S]{0,320})")) || [])[1] || "";
+      ok(/if \(!isAdmin\(\)\)/.test(body), `${fn}() gates on isAdmin()`);
+      // The gate must come before any state mutation in that body.
+      const gateAt = body.indexOf("isAdmin()");
+      const mutAt  = body.search(/state\.\w+|\.slots|\bp\.name\s*=/);
+      ok(mutAt === -1 || gateAt < mutAt, `${fn}() gate precedes its first state access`);
+    }
+  });
+
+  t("guests never SEE the destructive party controls (admin-only class)", () => {
+    ok(/class="party-actions admin-only"[^>]*onclick="clearParty/.test(appHtml),
+       "per-party ✕ carries admin-only");
+    ok(/class="slot-del admin-only"[^>]*onclick="[^"]*removeFromSlot/.test(appHtml),
+       "per-slot × carries admin-only");
+    ok(/body\.viewer-mode \.admin-only \{ display: none !important; \}/.test(appHtml),
+       "viewer-mode hides .admin-only");
+  });
+
+  // A member with a blank name OR job is a "ghost" (isGhostMember) → every slot
+  // holding them renders "Empty" on EVERY client, so blanking teammates' rows was
+  // a cross-client way to wipe a ตี้. .validate can't stop it (skipped on deletes,
+  // never evaluated on an ancestor), so the shape is enforced in the $mid .write —
+  // live-probed 2026-08-01: name:null / DELETE name / job:"" / name:"" all 401,
+  // while a normal guest edit (discord, job→Sniper) still returns 200.
+  t("members $mid .write keeps every guest-written member non-ghost", () => {
+    const w = String(rules.rules.members.$mid[".write"]);
+    ok(w.includes("auth != null"), "still requires a signed-in user");
+    ok(w.includes("data.exists()") && w.includes("newData.exists()"), "no create/delete by guests");
+    ok(w.includes("hasChildren(['name', 'job'])"), "name+job must both survive the write (blocks child deletes)");
+    ok(w.includes("newData.child('name').val().length > 0"), "name can't end up blank");
+    ok(w.includes("newData.child('job').val().length > 0"), "job can't end up blank");
+    const v = String(rules.rules.members.$mid.name[".validate"]);
+    ok(v.includes("length > 0") && v.includes("length <= 64"), "name .validate also rejects '' (applies to admins too)");
+  });
+
+  t("client mirrors the rule so guests get a message, not a permission error", () => {
+    ok(/if \(field === "name" && !val\) \{/.test(appHtml), "rosterUpdate blocks blank name for everyone");
+    ok(/if \(field === "job" && !val && !isAdmin\(\)\) \{/.test(appHtml), "rosterUpdate blocks blank job for guests");
+    ok(/if \(!String\(d\.job\)\.trim\(\) && !isAdmin\(\)\)/.test(appHtml), "rosterSaveMine blocks a blank-job save");
   });
 })();
 

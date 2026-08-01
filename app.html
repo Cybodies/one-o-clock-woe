@@ -3621,6 +3621,7 @@ function addManualMember() {
   save(); rebuildJobFilter(); render();
 }
 function deleteMember(id) {
+  if (!isAdmin()) { toast("ต้องเป็น admin", "error"); return; }
   if (!confirm("ลบสมาชิกนี้?")) return;
   state.members = state.members.filter(m => m.id !== id);
   state.parties.forEach(p => p.slots = p.slots.map(s => s === id ? null : s));
@@ -3659,6 +3660,7 @@ function placeAtSlot(memberId, partyId, slotIdx) {
   }
 }
 function removeFromSlot(partyId, slotIdx) {
+  if (!isAdmin()) return;   // slot × / drag-out — admin-only like every party edit
   const p = state.parties.find(p => p.id === partyId);
   if (p) p.slots[slotIdx] = null;
 }
@@ -3670,12 +3672,14 @@ function swapParties(idA, idB) {
   [a.slots, b.slots] = [b.slots, a.slots];
 }
 function clearParty(partyId) {
+  if (!isAdmin()) { toast("ต้องเป็น admin", "error"); return; }
   if (!confirm("เคลียร์สมาชิกทั้งหมดในตี้นี้?")) return;
   const p = state.parties.find(p => p.id === partyId);
   p.slots = Array(PARTY_SLOTS).fill(null);
   commitPartiesNow(); render();
 }
 function renameParty(partyId) {
+  if (!isAdmin()) { toast("ต้องเป็น admin", "error"); return; }
   const p = state.parties.find(p => p.id === partyId);
   const v = prompt("เปลี่ยนชื่อตี้:", p.name);
   if (v !== null && v.trim()) { p.name = v.trim(); commitPartiesNow(); render(); }
@@ -3715,6 +3719,7 @@ function dragLeaveEl(e) { e.currentTarget.classList.remove("drag-over"); }
 function dropSlot(e, partyId, slotIdx) {
   e.preventDefault();
   e.currentTarget.classList.remove("drag-over");
+  if (!isAdmin()) return;
   if (drag.type === "member") {
     placeAtSlot(drag.payload.memberId, partyId, slotIdx);
   }
@@ -3723,6 +3728,7 @@ function dropSlot(e, partyId, slotIdx) {
 function dropPartyNum(e, partyId) {
   e.preventDefault();
   e.currentTarget.classList.remove("drag-over");
+  if (!isAdmin()) return;
   if (drag.type === "party") {
     swapParties(drag.payload.partyId, partyId);
   } else if (drag.type === "member") {
@@ -4945,7 +4951,7 @@ function buildPartyRowHtml(p) {
             <span class="slot-name">${escapeHtml(m.name)}</span>
             ${cpHtml}
           </div>
-          <span class="slot-del" onclick="event.stopPropagation(); removeFromSlot(${p.id}, ${i}); commitPartiesNow(); render();" title="ลบจากตี้">×</span>
+          <span class="slot-del admin-only" onclick="event.stopPropagation(); removeFromSlot(${p.id}, ${i}); commitPartiesNow(); render();" title="ลบจากตี้">×</span>
         </div>`;
   }).join("");
   const tc = teamColor(p.id);
@@ -4962,7 +4968,7 @@ function buildPartyRowHtml(p) {
       ${slotsHtml}
       <div class="party-row-actions">
         <button class="party-sort admin-only" onclick="sortPartyByJob(${p.id})" title="จัดเรียงตามอาชีพ (Knight → Paladin → Wizard → …)">🔀</button>
-        <div class="party-actions" onclick="clearParty(${p.id})" title="เคลียร์ตี้นี้">✕</div>
+        <div class="party-actions admin-only" onclick="clearParty(${p.id})" title="เคลียร์ตี้นี้">✕</div>
       </div>
     </div>`;
 }
@@ -5465,7 +5471,7 @@ function buildSummaryHtml() {
  * guild bug report maps to a deployed version and stale caches are visible.
  * (No build step, so this is a manually-bumped constant — see RUNBOOK.md.)
  * ===================================================================== */
-const APP_VERSION = "2026.08.01.1";
+const APP_VERSION = "2026.08.01.2";
 function buildVersionStamp() { return "v" + APP_VERSION; }
 function renderVersionStamp() {
   if (typeof document === "undefined" || !document.body) return;
@@ -7081,10 +7087,18 @@ function rosterUpdate(id, field, value) {
       renderBattlefields();
       return;
     }
-    // Blank name would orphan the row from the claim chooser — admins may
-    // still clear it (the ghost-row dedupe machinery handles those).
-    if (field === "name" && !val && !isAdmin()) {
+    // Blank name/job orphans the row from the claim chooser AND makes every
+    // slot holding that member render "Empty" on every client (isGhostMember).
+    // The rules reject both for guests now, so block them here too — with a
+    // useful message instead of a raw permission error. (Admins are granted by
+    // the /members rule, but a blank name is rejected for them as well.)
+    if (field === "name" && !val) {
       toast("ชื่อห้ามว่าง", "error");
+      renderBattlefields();
+      return;
+    }
+    if (field === "job" && !val && !isAdmin()) {
+      toast("Job ห้ามว่าง — เลือกอาชีพก่อน", "error");
       renderBattlefields();
       return;
     }
@@ -7129,6 +7143,9 @@ function rosterSaveMine(id) {
   if (!d) return;
   const name = String(d.name).trim();
   if (!name) { toast("ชื่อห้ามว่าง", "error"); return; }  // keep the draft so it can be fixed
+  // Blank job = the member's slot renders "Empty" for everyone (isGhostMember),
+  // so the rules reject it for non-admins — say why instead of failing the write.
+  if (!String(d.job).trim() && !isAdmin()) { toast("Job (GL) ห้ามว่าง — เลือกอาชีพก่อนเซฟ", "error"); return; }
   for (const f of ["name", "job", "jobOverrun", "discord"]) {
     if (String(d[f]).trim().length > ROSTER_FIELD_MAX[f]) {
       toast(`${ROSTER_FIELD_LABEL[f]} ยาวเกิน ${ROSTER_FIELD_MAX[f]} ตัวอักษร`, "error");
@@ -7297,6 +7314,11 @@ async function rosterDedupe(silent) {
       updatedAt: Date.now(),
       updatedBy: rosterActorName()
     });
+    // A ghost bucket (blank name) still merges — but don't re-write the blank
+    // name: the rules reject empty names now (a guest could blank someone's
+    // name to make their slot render "Empty" on every client). Omitting the
+    // key leaves the existing value untouched, so .validate never runs on it.
+    if (!mergedPayload.name) delete mergedPayload.name;
     await _fbMembersRef.child(best.id).update(mergedPayload).catch(rosterWriteFailed);
     merged++;
     // Remove all others

@@ -10,6 +10,41 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 - _nothing yet_
 
+## [2026.08.01.2]
+### Fixed (ความปลอดภัย — คนที่ไม่ใช่แอดมิน "ลบตี้" ได้)
+- **ปุ่ม ✕ "เคลียร์ตี้นี้" เปิดให้ guest กดได้** — ปุ่มถูก render ให้ทุกคน (ไม่มีคลาส
+  `admin-only` และไม่อยู่ในลิสต์ viewer-mode) และ `clearParty()` ไม่มีเกต `isAdmin()`
+  เลย → guest กด + OK แล้วสมาชิกทั้ง 5 ช่องหายจากจอตัวเอง แถม `commitPartiesNow()`
+  เซฟลง localStorage ก่อนถึงเกต ทำให้รอดข้าม reload จนกว่า snapshot จะดึงกลับ.
+  ข้อมูลบน Firebase ไม่เคยเสีย (guest = anonymous auth เขียน `/parties` ไม่ผ่าน rules)
+  แต่ถ้ามีแอดมินมาล็อกอินต่อในแท็บเดียวกัน บอร์ดที่โดนล้างจะถูก push จริงทุกเครื่อง.
+- **ใส่เกต `isAdmin()` ให้ทุก handler ที่ทำลายข้อมูลตี้**: `clearParty`, `renameParty`,
+  `deleteMember`, `removeFromSlot` (× ราย slot + ลากออกไปทิ้ง), `dropSlot`, `dropPartyNum`.
+- **ซ่อนปุ่มจาก guest**: ✕ ของตี้ + × ของ slot ได้คลาส `admin-only` (viewer-mode ซ่อนให้).
+- ไม่ใช่ regression จากงานยุบ Overrun 4→2 — รูนี้มีมาตั้งแต่คอมมิตแรกที่สร้าง viewer mode.
+
+### Security (rules — ปิดช่อง ghost slot ข้ามเครื่อง) — DEPLOYED 2026-08-01
+- ช่องจริงที่วัดได้: rules เดิมยอมให้ **ใครก็ตามที่ล็อกอิน (guest = anonymous) แก้ member
+  แถวไหนก็ได้** และ member ที่ชื่อ**หรือ** job ว่าง = ghost → slot ของคนนั้นขึ้น "Empty"
+  **ทุกเครื่อง** (`isGhostMember`) → ทำให้ตี้ดูโหว่ข้ามเครื่องได้จริง (ร้ายกว่าบัคที่แจ้ง
+  เพราะอันนั้น local-only). ถ้าแอดมินกด 🧹 ต่อ จะกลายเป็นลบถาวร.
+- `.validate` เอาไม่อยู่ (ข้ามเมื่อลบ child + ไม่ถูกเรียกที่ ancestor) → ย้ายมาบังคับที่
+  **`members/$mid/.write`**: ต้องมี `name`+`job` และทั้งคู่ต้องไม่ว่างหลังเขียน.
+  แอดมินไม่กระทบ (ได้สิทธิ์จาก `/members` ซึ่งเป็น rule ที่ตื้นกว่า).
+- `members/$mid/name` `.validate` เพิ่ม `length > 0` (บังคับกับแอดมินด้วย) +
+  `rosterDedupe` ไม่เขียนชื่อว่างซ้ำ (ตัด key ออก) → ghost bucket ยัง merge ได้เหมือนเดิม.
+- client: ห้ามชื่อว่างทุกคน, ห้าม job ว่างสำหรับ guest (`rosterUpdate` + `rosterSaveMine`)
+  → ขึ้น toast บอกเหตุผล แทน permission error ดิบ ๆ.
+- **พิสูจน์กับ live ด้วย anonymous REST probe:** ก่อนแก้ `name:""`, `name:null`,
+  `DELETE …/name`, `job:""` = **200 ทั้งหมด** (เขียนได้จริง) · หลัง deploy = **401 ทั้งหมด**
+  ส่วนการแก้ปกติของ guest (discord, เปลี่ยน job เป็นอาชีพจริง) = **200 เหมือนเดิม**.
+- เทสต์ใหม่ 8 ตัว (รวม 207) ตรึงเกตทุกตัว + คลาส `admin-only` + rule ใหม่ + client guard.
+
+### Known gap (ยังไม่ปิด — ต้องทำเป็นฟีเจอร์แยก)
+- guest ยัง **claim แถวของใครก็ได้** (claim เก็บใน localStorage ฝั่ง client ล้วน) แล้วแก้
+  ข้อมูลคนนั้นได้ตาม rules — แค่ทำให้เป็น ghost ไม่ได้แล้ว. ทางแก้จริงคือผูก member row
+  กับ Firebase uid (`members/$mid/uid` + `.write` เทียบ `auth.uid`) — เป็นงานแยก.
+
 ## [2026.08.01.1]
 ### Changed (Overrun — ยุบเหลือ 2 กลุ่ม)
 - **ยุบ 4 กลุ่ม → 2 กลุ่ม**: "ตี้แดง" ถือตี้ 1-8, "ตี้เหลือง" ถือตี้ 9-16 (แบ่งต่อเนื่อง
