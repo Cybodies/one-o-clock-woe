@@ -2446,7 +2446,7 @@
     .roster-table-wrap { overflow: visible; }
     .roster-table { min-width: 0; }
     .roster-table thead { display: none; }   /* header redundant in card layout */
-    .roster-table tbody tr { display: block; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    .roster-table tbody tr { display: flow-root; padding: 8px 10px; border-bottom: 1px solid var(--border); }  /* flow-root contains the floated .r-actions (💾/×) so it stays inside its own card */
     .roster-table tbody tr:hover td { background: transparent; }
     .roster-table tbody td { display: block; padding: 3px 0; border: none; }
     .roster-table td.r-rk {
@@ -5501,7 +5501,7 @@ function buildSummaryHtml() {
  * guild bug report maps to a deployed version and stale caches are visible.
  * (No build step, so this is a manually-bumped constant — see RUNBOOK.md.)
  * ===================================================================== */
-const APP_VERSION = "2026.08.02.1";
+const APP_VERSION = "2026.08.02.2";
 function buildVersionStamp() { return "v" + APP_VERSION; }
 function renderVersionStamp() {
   if (typeof document === "undefined" || !document.body) return;
