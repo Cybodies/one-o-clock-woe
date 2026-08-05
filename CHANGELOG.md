@@ -10,6 +10,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 - _nothing yet_
 
+## [2026.08.05.1]
+### Changed (เปลี่ยนชื่อ repo + URL เว็บ รอบสอง — กันลิงก์หลุดหลังมีคนออกกิลด์)
+- **rename `gboard-x7k3` → `qgrid-u6hn`** ⇒ URL เก่า `cybodies.github.io/gboard-x7k3`
+  กลายเป็น **404**, URL ใหม่ = `cybodies.github.io/qgrid-u6hn/`. อัปเดต og:image/og:url +
+  ลิงก์ GitHub ใน footer ของ `index.html` และ URL ในเอกสาร (RUNBOOK/CLAUDE/woe-coder
+  ยังชี้ชื่อเก่า `one-o-clock-woe` ตกค้างจากรอบก่อน — แก้พร้อมกันรอบนี้).
+
 ## [2026.08.02.2]
 ### Fixed (Roster มือถือ — ปุ่ม 💾 เซฟ หลุดไปโผล่การ์ดคนถัดไป)
 - **อาการที่แจ้ง:** บนมือถือ (จอ ≤700px) พอเลือกชื่อตัวเองเพื่อแก้ข้อมูล ปุ่ม **💾 เซฟ**
