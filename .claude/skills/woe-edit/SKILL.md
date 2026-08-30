@@ -102,7 +102,7 @@ three, double-check the change is actually that broad.
 ## Time / dates
 
 Always use the BKK helpers (`bkkNow`, `todayBkkISO`, `bkkDow`,
-`isEventDay`, `bkkHour`) near `app.html:2382-2415`. Raw `new Date()`
+`isEventDay`, `bkkMinuteOfDay`) near `app.html:2382-2415`. Raw `new Date()`
 gives wrong results outside Asia/Bangkok.
 
 ## Auction rates + event-day gate (recent features)

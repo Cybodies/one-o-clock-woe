@@ -2949,12 +2949,33 @@ function bkkNow() {
   const t = Date.now() + 7 * 60 * 60 * 1000;
   return new Date(t);
 }
-// Auction requests open at noon of the event day (guild rule, 2026-08-01 —
-// replaced an evening-hours label that nothing enforced — see CHANGELOG
-// 2026.08.01.3). Read the clock through bkkHour() so
-// the gate is a pure, testable check.
-const AUCTION_OPEN_HOUR = 12;
-function bkkHour() { return bkkNow().getUTCHours(); }   // UTC fields = BKK wall clock
+// Auction requests are open in a WINDOW on the event day: 19:30–22:00 BKK
+// (guild rule, 2026-08-30 — replaced the noon-open/never-closes gate of
+// 2026.08.01.3, which itself replaced an unenforced label). Same window on
+// every auction page and every event day.
+//   The bound has minutes, so the clock is read as a MINUTE-OF-DAY — an
+// hour-only check — the old bkkHour helper — cannot express 19:30. Every label is
+// derived from these constants; never hardcode the time in UI copy.
+const AUCTION_OPEN_HOUR    = 19;
+const AUCTION_OPEN_MINUTE  = 30;
+const AUCTION_CLOSE_HOUR   = 22;
+const AUCTION_CLOSE_MINUTE = 0;
+const AUCTION_OPEN_MOD     = AUCTION_OPEN_HOUR  * 60 + AUCTION_OPEN_MINUTE;    // 1170
+const AUCTION_CLOSE_MOD    = AUCTION_CLOSE_HOUR * 60 + AUCTION_CLOSE_MINUTE;   // 1320
+function hhmm(h, m) { return `${h}:${String(m).padStart(2, "0")}`; }
+const AUCTION_OPEN_LABEL   = hhmm(AUCTION_OPEN_HOUR,  AUCTION_OPEN_MINUTE);    // "19:30"
+const AUCTION_CLOSE_LABEL  = hhmm(AUCTION_CLOSE_HOUR, AUCTION_CLOSE_MINUTE);   // "22:00"
+// Minutes since BKK midnight. Read the clock ONLY through this — it's the one
+// seam the test harness overrides to freeze time.
+function bkkMinuteOfDay() { const d = bkkNow(); return d.getUTCHours() * 60 + d.getUTCMinutes(); }
+// Window state for right now: "early" (before open) | "late" (at/after close)
+// | null (open). One source of truth for the gate AND every piece of UI copy.
+function auctionWindowState() {
+  const mod = bkkMinuteOfDay();
+  if (mod < AUCTION_OPEN_MOD)   return "early";
+  if (mod >= AUCTION_CLOSE_MOD) return "late";
+  return null;
+}
 function todayBkkISO() {
   const d = bkkNow();
   const y = d.getUTCFullYear();
@@ -5501,7 +5522,7 @@ function buildSummaryHtml() {
  * guild bug report maps to a deployed version and stale caches are visible.
  * (No build step, so this is a manually-bumped constant — see RUNBOOK.md.)
  * ===================================================================== */
-const APP_VERSION = "2026.08.05.1";
+const APP_VERSION = "2026.08.30.1";
 function buildVersionStamp() { return "v" + APP_VERSION; }
 function renderVersionStamp() {
   if (typeof document === "undefined" || !document.body) return;
@@ -6644,22 +6665,26 @@ function autoCheckResets() {
   // pruned by date in the /leaves listener, so a future match's leave survives.)
 }
 
-// The noon auction gate is read at RENDER time, and crossing it writes nothing
-// to Firebase — so without this, a tab left open since the morning would still
-// show "ยังไม่ถึงเวลา" all afternoon. Re-render once, when the boundary flips.
-let _lastAuctionOpen = null;
-function checkAuctionOpenFlip() {
-  const open = bkkHour() >= AUCTION_OPEN_HOUR;
-  if (_lastAuctionOpen === null) { _lastAuctionOpen = open; return false; }
-  if (open === _lastAuctionOpen) return false;
-  _lastAuctionOpen = open;
+// The auction window is read at RENDER time, and crossing either edge writes
+// nothing to Firebase — so without this, a tab left open since the afternoon
+// would still show "ยังไม่ถึงเวลา" at 20:00, and one left open at 21:00 would
+// still offer the button at 22:30. Re-render once, on each boundary.
+// "?" = not primed yet. (null is a REAL state here — "window is open" — so it
+// can't double as the sentinel the way the old boolean gate's null did.)
+let _lastAuctionWindow = "?";
+function checkAuctionWindowFlip() {
+  const now = auctionWindowState();
+  if (_lastAuctionWindow === "?") { _lastAuctionWindow = now; return false; }
+  if (now === _lastAuctionWindow) return false;
+  _lastAuctionWindow = now;
   return true;
 }
 // Re-check every minute so the moment the clock crosses 00:00 BKK we reset
-// without needing a page reload — and so the noon unlock appears on its own.
+// without needing a page reload — and so both 19:30 (unlock) and 22:00 (close)
+// land on an already-open tab on their own.
 setInterval(() => {
   if (typeof autoCheckResets === "function") autoCheckResets();
-  if (checkAuctionOpenFlip() && typeof safeRender === "function") safeRender();
+  if (checkAuctionWindowFlip() && typeof safeRender === "function") safeRender();
 }, 60 * 1000);
 
 /* ---------- Audit log: record WHO changed a team (system/auditLog) ----------
@@ -8239,11 +8264,13 @@ function buildAuctionView(kind) {
 
   // Day-status banner under the hero (schedule line lives here so guests still
   // see the auction hours that used to sit in the old tab's hero).
-  const hoursLine = `<span class="auction-daystatus-hours">ประมูล ${AUCTION_OPEN_HOUR}:00 เป็นต้นไป ของวันกิจกรรม · เคลียร์ 00:00</span>`;
-  const beforeOpen = bkkHour() < AUCTION_OPEN_HOUR;   // event day, but not noon yet
+  const hoursLine = `<span class="auction-daystatus-hours">ประมูล ${AUCTION_OPEN_LABEL}–${AUCTION_CLOSE_LABEL} ของวันกิจกรรม · เคลียร์ 00:00</span>`;
+  const windowState = auctionWindowState();           // "early" | "late" | null
   let dayStatus;
-  if (isTodaysKind && beforeOpen) {
-    dayStatus = `<div class="auction-daystatus other">⏳ วันกิจ ${kindLabel} — ยังไม่ถึงเวลา เปิดขอตอน ${AUCTION_OPEN_HOUR}:00 ${hoursLine}</div>`;
+  if (isTodaysKind && windowState === "early") {
+    dayStatus = `<div class="auction-daystatus other">⏳ วันกิจ ${kindLabel} — ยังไม่ถึงเวลา เปิดขอตอน ${AUCTION_OPEN_LABEL} ${hoursLine}</div>`;
+  } else if (isTodaysKind && windowState === "late") {
+    dayStatus = `<div class="auction-daystatus closed">⛔ วันกิจ ${kindLabel} — ปิดรับคำขอแล้ว (${AUCTION_CLOSE_LABEL}) ${hoursLine}</div>`;
   } else if (isTodaysKind) {
     dayStatus = `<div class="auction-daystatus open">🟢 วันกิจ ${kindLabel} — เปิดรับคำขอประมูล ${hoursLine}</div>`;
   } else if (eventModeToday) {
@@ -8282,18 +8309,21 @@ function buildAuctionView(kind) {
   // Request section — button (event-day + leave gated) + my requests (this mode)
   const myRequests = claimedId ? arGetMyRequests(claimedId).filter(r => r.date >= today && r.mode === kind) : [];
   const onLeave    = claimedId && arHasLeaveOnDate(claimedId, today);
-  const notYet     = isTodaysKind && bkkHour() < AUCTION_OPEN_HOUR;
-  const lockReason = !isTodaysKind ? "noevent" : onLeave ? "leave" : notYet ? "early" : null;
-  const btnOff     = onLeave || notYet;
+  const outOfHours = isTodaysKind ? windowState : null;   // "early" | "late" | null
+  const lockReason = !isTodaysKind ? "noevent" : onLeave ? "leave" : outOfHours;
+  const btnOff     = onLeave || !!outOfHours;
   const requestBtnBar = claimedId ? `
     <div class="ar-bulk-bar">
       ${isTodaysKind ? `<button class="ar-request-btn" ${btnOff ? "disabled" : ""}
         title="${onLeave ? escapeHtml("คุณลงลาวันนี้ไว้ — ไม่มีสิทธิ์ขอประมูล")
-                         : notYet ? escapeHtml(`เปิดขอตอน ${AUCTION_OPEN_HOUR}:00`) : ""}"
+                         : outOfHours === "early" ? escapeHtml(`เปิดขอตอน ${AUCTION_OPEN_LABEL}`)
+                         : outOfHours === "late"  ? escapeHtml(`ปิดรับคำขอแล้วตอน ${AUCTION_CLOSE_LABEL}`) : ""}"
         onclick="arOpenRequestModal('${today}','${kind}')">🙋 ขอประมูล ${kindLabel} วันนี้ (${formatDayShortBkk(today)})</button>` : ""}
     </div>
     ${lockReason === "early"
-      ? `<div class="ar-lock-note noevent">⏳ ยังไม่ถึงเวลาประมูล — เปิดขอตอน ${AUCTION_OPEN_HOUR}:00 ของวันกิจ<br><span>กลับมาใหม่ตอนเที่ยงได้เลย</span></div>`
+      ? `<div class="ar-lock-note noevent">⏳ ยังไม่ถึงเวลาประมูล — เปิดขอตอน ${AUCTION_OPEN_LABEL} ของวันกิจ<br><span>กลับมาใหม่ตอน ${AUCTION_OPEN_LABEL} ได้เลย</span></div>`
+      : lockReason === "late"
+      ? `<div class="ar-lock-note noevent">⛔ ปิดรับคำขอประมูลแล้ว — รับถึง ${AUCTION_CLOSE_LABEL} ของวันกิจ<br><span>ช่วงขอประมูลคือ ${AUCTION_OPEN_LABEL}–${AUCTION_CLOSE_LABEL} · ไว้วันกิจหน้านะ</span></div>`
       : lockReason === "noevent"
       ? `<div class="ar-lock-note noevent">🔒 หน้านี้ยังไม่เปิดรับคำขอวันนี้<br><span>ขอ ${kindLabel} ได้เฉพาะวันกิจ ${kindLabel} (${isGL ? "อังคาร/พฤหัส" : "อาทิตย์"}) · ขอล่วงหน้าไม่ได้</span></div>`
       : lockReason === "leave"
@@ -8887,15 +8917,18 @@ function arResetAuctionPages() {
 /* ---------- Modal helpers ---------- */
 /** Shared gate for opening / submitting a request. Returns an error string
  *  (to toast) if the request is not allowed, or null if it's OK. Enforces:
- *  current day only, must be an event day, and the request mode must match
- *  that day's event (GL on อังคาร/พฤหัส, Overrun on อาทิตย์), plus leave. */
+ *  current day only, must be an event day, the request mode must match that
+ *  day's event (GL on อังคาร/พฤหัส, Overrun on อาทิตย์), the clock must be
+ *  inside the 19:30–22:00 window, and the member must not be on leave. */
 function arRequestBlockReason(memberId, date, mode) {
   if (date !== todayBkkISO()) return "ขอประมูลได้เฉพาะวันปัจจุบันเท่านั้น — ขอล่วงหน้าไม่ได้";
   const ev = isEventDay(date);  // "GL" | "Overrun" | null
   if (!ev) return "วันนี้ไม่ใช่วันกิจกรรม — ขอประมูลได้เฉพาะวันกิจ (อังคาร/พฤหัส = GL, อาทิตย์ = Overrun)";
   const allowedMode = ev === "GL" ? "gl" : "overrun";
   if (mode !== allowedMode) return `วันนี้เป็นกิจ ${ev} — ขอได้เฉพาะของกิจ ${ev} เท่านั้น`;
-  if (bkkHour() < AUCTION_OPEN_HOUR) return `ยังไม่ถึงเวลาประมูล — เปิดขอ ${AUCTION_OPEN_HOUR}:00 เป็นต้นไป`;
+  const win = auctionWindowState();
+  if (win === "early") return `ยังไม่ถึงเวลาประมูล — เปิดขอ ${AUCTION_OPEN_LABEL}–${AUCTION_CLOSE_LABEL}`;
+  if (win === "late")  return `ปิดรับคำขอประมูลแล้ว — รับถึง ${AUCTION_CLOSE_LABEL} เท่านั้น`;
   if (arHasLeaveOnDate(memberId, date)) return `คุณลงลาวันที่ ${date} ไว้ — ไม่มีสิทธิ์ขอประมูล`;
   return null;
 }

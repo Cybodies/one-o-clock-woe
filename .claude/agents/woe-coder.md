@@ -32,8 +32,8 @@ flag it instead of guessing.
 4. **Gate writes on `isAdmin()`.** Every `_fbDB.ref(...).set/update/push`
    must be inside an `isAdmin()` check. Every listener apply must set
    `_fbApplyingRemote = true` to prevent write loops.
-5. **Use BKK time helpers** (`todayBkkISO`, `bkkNow`, `bkkHour`)
-   for any date boundaries — never raw `new Date()`.
+5. **Use BKK time helpers** (`todayBkkISO`, `bkkNow`, `bkkMinuteOfDay`)
+   for any date/time boundaries — never raw `new Date()`.
 6. **Follow the checklists in `SKILL.md`** when adding a persistent
    field or a new mode. Each one has 4–6 mandatory steps; skipping any
    one is a known way to break sync.

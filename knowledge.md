@@ -288,8 +288,12 @@ load() ──▶ initFirebase() ──▶ onAuthStateChanged
   truth used by both `arOpenRequestModal` and `arCreateRequest`. Allows a
   request only when: date == today (BKK), `isEventDay(today)` is truthy, the
   request `mode` matches that day's event (GL ↔ อังคาร/พฤหัส, Overrun ↔
-  อาทิตย์), and the member isn't on leave. Requests are for **today only** (no
-  advance window). The ขอประมูล UI is embedded in `buildAuctionView(kind)` — the
+  อาทิตย์), the clock is inside the **19:30–22:00** window
+  (`auctionWindowState()` → `"early" | "late" | null`; close is exclusive), and
+  the member isn't on leave. Requests are for **today only** (no advance
+  window). The window gates *requesting* only — admin approval still works
+  after 22:00. Time is read as a minute-of-day (`bkkMinuteOfDay()`), never
+  whole hours: an hour-only check cannot express 19:30 (2026.08.30.1). The ขอประมูล UI is embedded in `buildAuctionView(kind)` — the
   standalone tab was removed (2026.07.09.1).
 - **Request queue order (2026-06-12):** every row shows 🕐 `requestedAt`
   (`arFormatTime`, BKK, HH:MM:SS; legacy = "—"). The PENDING group renders

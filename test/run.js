@@ -49,7 +49,7 @@ function reset(app, members) {
   s.auctionOverrun = app.call("normalizeAuctionState", {}, "overrun");
   app.setSearch("");
   app.setAdmin(true);
-  app.setHour(20);   // past AUCTION_OPEN_HOUR — the time gate is tested explicitly below
+  app.setClock(20, 0);   // inside the 19:30–22:00 window — the gate is tested explicitly below
   return s;
 }
 function mkMembers(names) { return names.map(n => ({ id: n, name: n, job: "Knight", cp: 1000 })); }
@@ -60,7 +60,7 @@ console.log("[parse]");
 t("inline <script> parses cleanly (QA gate)", () => { ok(parseCheck() > 1000, "expected sizable inline JS"); });
 
 const app = loadApp();
-app.setHour(20);   // default clock for every test: after the noon auction gate
+app.setClock(20, 0);   // default clock for every test: inside the auction window
 t("app boots in harness (functions + state available)", () => {
   ok(app.state && typeof app.state === "object", "no state");
   ok(typeof app.fn("computeAuction") === "function");
@@ -105,34 +105,71 @@ t("gate BLOCKS a member on leave for the event day", () => {
   isErr(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), "on leave");
 });
 
-// 2026-08-01: the auction opens at NOON of the event day. Before this, the
-// "21:00–22:00" line was decoration — any hour of the event day was open.
-console.log("\n[auction opens at noon]");
-t("gate BLOCKS a request before 12:00 on the right event day", () => {
+// 2026-08-30: requests are open in a WINDOW, 19:30–22:00 of the event day
+// (was noon-open/never-closes since 2026-08-01). The bound has minutes, so the
+// gate reads a minute-of-day — an hour-only check cannot express 19:30.
+console.log("\n[auction window 19:30–22:00]");
+const HHMM = (h, m) => `${h}:${String(m).padStart(2, "0")}`;
+t("gate BLOCKS before 19:30 on the right event day", () => {
   reset(app, mkMembers(["A"]));
   app.setToday("2026-06-02");   // Tue = GL
-  for (const h of [0, 8, 11]) {
-    app.setHour(h);
-    isErr(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `blocked at ${h}:00`);
+  // 19:29 is the edge that an hour-only gate would wrongly let through.
+  for (const [h, m] of [[0,0], [8,0], [12,0], [19,0], [19,29]]) {
+    app.setClock(h, m);
+    isErr(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `blocked at ${HHMM(h,m)}`);
   }
-  app.setHour(20);
+  app.setClock(20, 0);
 });
-t("gate ALLOWS from 12:00 onward", () => {
+t("gate ALLOWS inside 19:30–21:59", () => {
   reset(app, mkMembers(["A"]));
   app.setToday("2026-06-02");
-  for (const h of [12, 13, 23]) {
-    app.setHour(h);
-    isNull(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `open at ${h}:00`);
+  for (const [h, m] of [[19,30], [19,31], [20,0], [21,59]]) {
+    app.setClock(h, m);
+    isNull(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `open at ${HHMM(h,m)}`);
   }
-  app.setHour(20);
+  app.setClock(20, 0);
 });
-t("noon is one constant — gate, schedule line and button all use it", () => {
+t("gate BLOCKS from 22:00 onward (close is exclusive)", () => {
+  reset(app, mkMembers(["A"]));
+  app.setToday("2026-06-02");
+  for (const [h, m] of [[22,0], [22,1], [23,59]]) {
+    app.setClock(h, m);
+    isErr(app.call("arRequestBlockReason", "A", "2026-06-02", "gl"), `blocked at ${HHMM(h,m)}`);
+  }
+  app.setClock(20, 0);
+});
+t("auctionWindowState labels the three states", () => {
+  app.setClock(19, 29); eq(app.call("auctionWindowState"), "early", "before open");
+  app.setClock(19, 30); eq(app.call("auctionWindowState"), null,    "at open");
+  app.setClock(21, 59); eq(app.call("auctionWindowState"), null,    "before close");
+  app.setClock(22,  0); eq(app.call("auctionWindowState"), "late",  "at close");
+  app.setClock(20, 0);
+});
+t("the window is 4 constants — gate, schedule line and button all derive from them", () => {
   const appHtml = require("fs").readFileSync(require("path").join(__dirname, "..", "app.html"), "utf8");
-  ok(/const AUCTION_OPEN_HOUR = 12;/.test(appHtml), "AUCTION_OPEN_HOUR = 12");
-  ok(!appHtml.includes("21:00–22:00"), "the old unenforced 21:00–22:00 label is gone");
-  ok(/ประมูล \$\{AUCTION_OPEN_HOUR\}:00 เป็นต้นไป/.test(appHtml), "schedule line derives from the constant");
-  ok(/bkkHour\(\) < AUCTION_OPEN_HOUR/.test(appHtml), "gate compares the BKK hour to the constant");
-  ok(/const btnOff\s+= onLeave \|\| notYet;/.test(appHtml), "request button is disabled before noon too");
+  ok(/const AUCTION_OPEN_HOUR    = 19;/.test(appHtml),   "AUCTION_OPEN_HOUR = 19");
+  ok(/const AUCTION_OPEN_MINUTE  = 30;/.test(appHtml),   "AUCTION_OPEN_MINUTE = 30");
+  ok(/const AUCTION_CLOSE_HOUR   = 22;/.test(appHtml),   "AUCTION_CLOSE_HOUR = 22");
+  ok(/const AUCTION_CLOSE_MINUTE = 0;/.test(appHtml),    "AUCTION_CLOSE_MINUTE = 0");
+  ok(/ประมูล \$\{AUCTION_OPEN_LABEL\}–\$\{AUCTION_CLOSE_LABEL\}/.test(appHtml),
+     "schedule line derives from the labels");
+  ok(/const btnOff\s+= onLeave \|\| !!outOfHours;/.test(appHtml),
+     "request button is disabled outside the window too");
+  // The gate must read the minute-of-day seam — bkkHour() cannot express 19:30,
+  // and leaving a call to it behind is how half the app drifts back to the hour.
+  ok(!/\bbkkHour\(\)/.test(appHtml), "no live bkkHour() call survives");
+  ok(/function bkkMinuteOfDay\(\)/.test(appHtml), "bkkMinuteOfDay is the clock seam");
+});
+t("no page hardcodes a time in UI copy — every label comes from the constants", () => {
+  const fs = require("fs"), path = require("path");
+  for (const f of ["app.html", "index.html"]) {
+    const src = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+    // Strip comments-ish prose is overkill; these literals must not appear at all.
+    ok(!src.includes("เที่ยง"), `${f}: no "noon" copy left`);
+    ok(!src.includes("21:00–22:00"), `${f}: no old unenforced label`);
+    ok(!/>[^<]*\b12:00\b/.test(src), `${f}: no hardcoded 12:00 in rendered text`);
+    ok(!/`[^`]*ประมูล 19:30/.test(src), `${f}: 19:30 is not typed into copy by hand`);
+  }
 });
 
 console.log("\n[editable per-person rates — Feature 2]");
@@ -2202,18 +2239,26 @@ console.log("\n[leave pruning — only after the day has passed]");
     ok(!/pastLeavePaths\(/.test(daily), "daily reset no longer CALLS it (it can run pre-hydration)");
   });
 
-  // A tab left open since the morning must unlock itself at 12:00 — crossing
-  // the gate writes nothing to Firebase, so no listener would wake the page.
-  t("the noon unlock re-renders an already-open page", () => {
-    ok(/function checkAuctionOpenFlip\(\)/.test(appHtml), "flip detector exists");
-    ok(/checkAuctionOpenFlip\(\) && typeof safeRender === "function"\) safeRender\(\)/.test(appHtml),
+  // A tab left open all afternoon must unlock itself at 19:30 AND lock itself
+  // again at 22:00 — crossing either edge writes nothing to Firebase, so no
+  // listener would wake the page.
+  t("both window edges re-render an already-open page", () => {
+    ok(/function checkAuctionWindowFlip\(\)/.test(appHtml), "flip detector exists");
+    ok(/checkAuctionWindowFlip\(\) && typeof safeRender === "function"\) safeRender\(\)/.test(appHtml),
        "the 60s interval re-renders on the flip");
-    app.setHour(9);  app.call("checkAuctionOpenFlip");          // prime
-    eq(app.call("checkAuctionOpenFlip"), false, "no flip while it stays morning");
-    app.setHour(12);
-    eq(app.call("checkAuctionOpenFlip"), true,  "flips exactly once at noon");
-    eq(app.call("checkAuctionOpenFlip"), false, "…and not again afterwards");
-    app.setHour(20);
+    app.setClock(19, 0);  app.call("checkAuctionWindowFlip");     // prime
+    eq(app.call("checkAuctionWindowFlip"), false, "no flip while it stays early");
+    app.setClock(19, 29);
+    eq(app.call("checkAuctionWindowFlip"), false, "still early at 19:29");
+    app.setClock(19, 30);
+    eq(app.call("checkAuctionWindowFlip"), true,  "flips once at 19:30 (open)");
+    eq(app.call("checkAuctionWindowFlip"), false, "…and not again while open");
+    app.setClock(21, 59);
+    eq(app.call("checkAuctionWindowFlip"), false, "no flip inside the window");
+    app.setClock(22, 0);
+    eq(app.call("checkAuctionWindowFlip"), true,  "flips once at 22:00 (close)");
+    eq(app.call("checkAuctionWindowFlip"), false, "…and not again after close");
+    app.setClock(20, 0);
   });
 
   t("no page still claims leave is wiped every Monday", () => {
